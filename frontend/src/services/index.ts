@@ -3,6 +3,9 @@ import type {
   AuthTokens,
   AuthUser,
   LoginPayload,
+  Mission,
+  MissionCategory,
+  MissionCompletion,
   PlayerProfile,
   RegisterPayload,
 } from '@/types'
@@ -54,5 +57,37 @@ export const userService = {
 export const playerService = {
   profile(token: string): Promise<PlayerProfile> {
     return request<PlayerProfile>('/api/v1/player/profile', { token })
+  },
+}
+
+/**
+ * Mission endpoints.
+ *
+ * <p>Start and complete send no body at all: the client asks for an action and
+ * the server decides eligibility, energy cost and rewards. There is no method
+ * that could pass a user id or a reward amount.
+ */
+export const missionService = {
+  list(token: string, category?: MissionCategory): Promise<Mission[]> {
+    const query = category ? `?category=${encodeURIComponent(category)}` : ''
+    return request<Mission[]>(`/api/v1/player/missions${query}`, { token })
+  },
+
+  detail(token: string, missionId: string): Promise<Mission> {
+    return request<Mission>(`/api/v1/player/missions/${missionId}`, { token })
+  },
+
+  start(token: string, missionId: string): Promise<Mission> {
+    return request<Mission>(`/api/v1/player/missions/${missionId}/start`, {
+      method: 'POST',
+      token,
+    })
+  },
+
+  complete(token: string, missionId: string): Promise<MissionCompletion> {
+    return request<MissionCompletion>(`/api/v1/player/missions/${missionId}/complete`, {
+      method: 'POST',
+      token,
+    })
   },
 }

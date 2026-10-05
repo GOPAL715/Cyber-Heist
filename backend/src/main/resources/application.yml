@@ -90,6 +90,14 @@ app:
     initial-energy: 100
     experience-per-level: 100
 
+  # ----------------------------- progression ------------------------------
+  # Level curve: requiredXp(level) = round(baseExperience * growthMultiplier^(level-1))
+  # XP is cumulative and never resets on level up.
+  progression:
+    base-experience: 100
+    growth-multiplier: 1.5
+    maximum-level: 100
+
 logging:
   level:
     root: INFO

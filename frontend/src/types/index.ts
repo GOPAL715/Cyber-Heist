@@ -43,13 +43,21 @@ export interface ApiErrorResponse {
   timestamp: string
 }
 
-/** The calling player's own game state. */
+/**
+ * The calling player's own game state.
+ *
+ * <p>`xpIntoLevel` and `xpForNextLevel` come from the server so the UI never
+ * reimplements the level curve.
+ */
 export interface PlayerProfile {
   id: string
   username: string
   displayName: string
   level: number
+  /** Total cumulative XP; never reset on level up. */
   experience: number
+  xpIntoLevel: number
+  xpForNextLevel: number
   coins: number
   energy: number
 }
@@ -63,4 +71,71 @@ export interface RegisterPayload {
 export interface LoginPayload {
   email: string
   password: string
+}
+
+// ---------------------------------------------------------------------------
+// Missions
+// ---------------------------------------------------------------------------
+
+export type MissionCategory =
+  | 'RECON'
+  | 'EXPLOIT'
+  | 'CRYPTOGRAPHY'
+  | 'NETWORK'
+  | 'INTELLIGENCE'
+
+export type MissionDifficulty = 'EASY' | 'MEDIUM' | 'HARD' | 'ELITE'
+
+export type MissionStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED'
+
+/**
+ * A mission as the server presents it, already decorated with the caller's
+ * level-gating. The client never computes rewards or eligibility.
+ */
+export interface Mission {
+  id: string
+  code: string
+  title: string
+  description: string
+  category: MissionCategory
+  difficulty: MissionDifficulty
+  requiredLevel: number
+  xpReward: number
+  coinReward: number
+  energyCost: number
+  estimatedDurationSeconds: number
+  status: MissionStatus
+  locked: boolean
+  lockReason: string | null
+  startable: boolean
+  blockedReason: string | null
+}
+
+/** The result of completing a mission, with every value computed server-side. */
+export interface MissionCompletion {
+  mission: {
+    id: string
+    code: string
+    title: string
+  }
+  rewards: {
+    experience: number
+    coins: number
+  }
+  progression: {
+    levelBefore: number
+    levelAfter: number
+    experience: number
+    xpIntoLevel: number
+    xpForNextLevel: number
+    leveledUp: boolean
+    levelsGained: number
+  }
+  player: {
+    level: number
+    experience: number
+    coins: number
+    energy: number
+  }
+  alreadyCompleted: boolean
 }

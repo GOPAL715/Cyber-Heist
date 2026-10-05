@@ -1,5 +1,10 @@
 package com.cyberheist;
 
+import com.cyberheist.mission.Mission;
+import com.cyberheist.mission.MissionProgressRepository;
+import com.cyberheist.mission.MissionRepository;
+import com.cyberheist.player.PlayerProfile;
+import com.cyberheist.player.PlayerProfileRepository;
 import com.cyberheist.user.Role;
 import com.cyberheist.user.User;
 import com.cyberheist.user.UserRepository;
@@ -14,9 +19,11 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.util.UUID;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
@@ -41,6 +48,18 @@ public abstract class IntegrationTestSupport {
 
     @Autowired
     protected PasswordEncoder passwordEncoder;
+
+    @Autowired
+    protected MissionRepository missionRepository;
+
+    @Autowired
+    protected PlayerProfileRepository profileRepository;
+
+    @Autowired
+    protected MissionProgressRepository progressRepository;
+
+    @Autowired
+    protected com.cyberheist.progression.LevelCurve levelCurve;
 
     protected UserRepository userRepository() {
         return userRepository;
@@ -93,6 +112,36 @@ public abstract class IntegrationTestSupport {
 
     protected UUID randomUuid() {
         return UUID.randomUUID();
+    }
+
+    /** Stable id of a seeded mission, addressed by its catalogue code. */
+    protected UUID missionId(String code) {
+        return missionRepository.findByCode(code)
+                .map(Mission::getId)
+                .orElseThrow(() -> new IllegalStateException("Seeded mission not found: " + code));
+    }
+
+    /** Creates and logs in a player, returning a ready-to-use bearer token. */
+    protected String signInNewPlayer(String username, String email) throws Exception {
+        registerPlayer(username, email);
+        return loginAndGetAccessToken(email, VALID_PASSWORD);
+    }
+
+    /** Performs a bearer-authenticated call. */
+    protected MockHttpServletRequestBuilder authGet(String url, String token) {
+        return get(url).header("Authorization", "Bearer " + token);
+    }
+
+    protected MockHttpServletRequestBuilder authPost(String url, String token) {
+        return post(url).header("Authorization", "Bearer " + token);
+    }
+
+    /** Current persisted state of a player, for asserting on side effects. */
+    protected PlayerProfile profileOf(String email) {
+        UUID userId = userRepository.findByEmailIgnoreCase(email)
+                .orElseThrow()
+                .getId();
+        return profileRepository.findByUserId(userId).orElseThrow();
     }
 
     /** Creates an account directly, bypassing the API. */

@@ -1,13 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Alert, FullPageLoader } from '@/components/ui'
 import { ComingSoon, ProgressBar, StatCard } from '@/components/game'
+import { MissionBoard } from '@/components/MissionBoard'
 import { useAuth } from '@/context/AuthContext'
 import { ApiError } from '@/services/apiClient'
 import { playerService } from '@/services'
 import type { PlayerProfile } from '@/types'
-
-/** Experience needed to advance from the current level. */
-const XP_PER_LEVEL = 100
 
 export function DashboardPage() {
   const { user, authorizedRequest, isInitialising } = useAuth()
@@ -16,34 +14,35 @@ export function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  const loadProfile = useCallback(async () => {
+    try {
+      // authorizedRequest refreshes the access token automatically if needed.
+      const data = await authorizedRequest((token) => playerService.profile(token))
+      setProfile(data)
+    } catch (loadError) {
+      setError(
+        loadError instanceof ApiError
+          ? loadError.message
+          : 'Unable to load your profile right now.',
+      )
+    }
+  }, [authorizedRequest])
+
   useEffect(() => {
     if (isInitialising) return
 
     let cancelled = false
 
     async function load() {
-      try {
-        // authorizedRequest refreshes the access token automatically if needed.
-        const data = await authorizedRequest((token) => playerService.profile(token))
-        if (!cancelled) setProfile(data)
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(
-            loadError instanceof ApiError
-              ? loadError.message
-              : 'Unable to load your profile right now.',
-          )
-        }
-      } finally {
-        if (!cancelled) setIsLoading(false)
-      }
+      await loadProfile()
+      if (!cancelled) setIsLoading(false)
     }
 
     void load()
     return () => {
       cancelled = true
     }
-  }, [authorizedRequest, isInitialising])
+  }, [isInitialising, loadProfile])
 
   if (isLoading) return <FullPageLoader />
 
@@ -74,9 +73,14 @@ export function DashboardPage() {
           </div>
 
           <div className="min-w-[220px] flex-1">
+            {/*
+              The level band comes from the server, so the client never needs to
+              know the curve. At the level cap the target is zero, in which case
+              a full bar is the honest representation.
+            */}
             <ProgressBar
-              value={profile.experience}
-              max={XP_PER_LEVEL}
+              value={profile.xpIntoLevel}
+              max={profile.xpForNextLevel}
               label="XP"
             />
           </div>
@@ -88,11 +92,14 @@ export function DashboardPage() {
         </div>
       </section>
 
+      {/* Refetched after each mission so level, coins and energy stay accurate. */}
+      <MissionBoard onPlayerUpdated={loadProfile} />
+
       <section className="space-y-4">
         <h3 className="text-xs uppercase tracking-[0.3em] text-slate-500">Next up</h3>
         <ComingSoon
-          title="Mission system — coming soon"
-          description="Contracts, objectives and payouts land in Phase 2."
+          title="Puzzle engine — coming soon"
+          description="Interactive contracts powered by each mission category."
         />
         <ComingSoon
           title="Upgrades & skill tree — coming soon"

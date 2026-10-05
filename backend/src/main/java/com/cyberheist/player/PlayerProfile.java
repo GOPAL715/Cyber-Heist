@@ -1,6 +1,7 @@
 package com.cyberheist.player;
 
 import com.cyberheist.common.AuditableEntity;
+import com.cyberheist.progression.LevelCurve;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -80,5 +81,58 @@ public class PlayerProfile extends AuditableEntity {
 
     public int getEnergy() {
         return energy;
+    }
+
+    // ---------------------------------------------------------------------
+    // Trusted mutations.
+    //
+    // These are the only writers of level, XP, coins and energy in Phase 2.
+    // They are plain Java methods with no JSON binding, so no controller and
+    // no client-supplied payload can set these values directly; the reward
+    // path in RewardService is the single legitimate caller.
+    // ---------------------------------------------------------------------
+
+    /**
+     * Applies an experience reward and recomputes the level.
+     *
+     * <p>XP is cumulative, so the level is derived from total XP rather than
+     * stored separately, which makes the two impossible to desynchronise.
+     * A single large reward can cross several thresholds at once.
+     *
+     * @return the level before the reward was applied
+     */
+    public int addExperience(long amount, LevelCurve levelCurve) {
+        if (amount < 0) {
+            throw new IllegalArgumentException("Experience award must not be negative");
+        }
+        int previousLevel = this.level;
+        this.experience += amount;
+        this.level = levelCurve.levelFor(this.experience);
+        return previousLevel;
+    }
+
+    /** Credits coins. The only writer of the coin balance in Phase 2. */
+    public void addCoins(long amount) {
+        if (amount < 0) {
+            throw new IllegalArgumentException("Coin award must not be negative");
+        }
+        this.coins += amount;
+    }
+
+    /**
+     * Spends energy, refusing to go negative.
+     *
+     * @return the energy left afterwards
+     * @throws IllegalStateException when the player cannot afford the cost
+     */
+    public int spendEnergy(int amount) {
+        if (amount < 0) {
+            throw new IllegalArgumentException("Energy cost must not be negative");
+        }
+        if (this.energy < amount) {
+            throw new IllegalStateException("Insufficient energy");
+        }
+        this.energy -= amount;
+        return this.energy;
     }
 }

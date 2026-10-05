@@ -3,11 +3,11 @@ package com.cyberheist.player;
 import com.cyberheist.common.ApiResponse;
 import com.cyberheist.exception.ResourceNotFoundException;
 import com.cyberheist.player.dto.PlayerProfileResponse;
+import com.cyberheist.progression.ProgressionResult;
+import com.cyberheist.progression.ProgressionService;
 import com.cyberheist.security.CurrentUser;
 import com.cyberheist.user.User;
 import com.cyberheist.user.UserRepository;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -28,13 +28,16 @@ public class PlayerController {
     private final PlayerProfileRepository profileRepository;
     private final UserRepository userRepository;
     private final CurrentUser currentUser;
+    private final ProgressionService progressionService;
 
     public PlayerController(PlayerProfileRepository profileRepository,
                             UserRepository userRepository,
-                            CurrentUser currentUser) {
+                            CurrentUser currentUser,
+                            ProgressionService progressionService) {
         this.profileRepository = profileRepository;
         this.userRepository = userRepository;
         this.currentUser = currentUser;
+        this.progressionService = progressionService;
     }
 
     /** Returns the caller's own profile. */
@@ -49,12 +52,18 @@ public class PlayerController {
                 .map(User::getUsername)
                 .orElse(profile.getDisplayName());
 
+        // The level band is resolved server-side so the client never has to
+        // duplicate the curve just to draw a progress bar.
+        ProgressionResult progression = progressionService.describe(profile);
+
         return ApiResponse.of(new PlayerProfileResponse(
                 profile.getId(),
                 username,
                 profile.getDisplayName(),
                 profile.getLevel(),
                 profile.getExperience(),
+                progression.xpIntoLevel(),
+                progression.xpForNextLevel(),
                 profile.getCoins(),
                 profile.getEnergy()
         ));
