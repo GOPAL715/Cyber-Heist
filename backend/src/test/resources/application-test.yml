@@ -1,0 +1,42 @@
+# Test profile: runs against an in-memory H2 database in PostgreSQL mode so the
+# suite needs no external service. The same Flyway migrations are applied, which
+# means the schema under test is the schema that ships.
+spring:
+  datasource:
+    url: jdbc:h2:mem:cyberheist;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    database-platform: org.hibernate.dialect.H2Dialect
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+app:
+  security:
+    jwt:
+      # Throwaway secret for tests only. Never reused outside the test profile.
+      secret: test-only-secret-value-that-is-long-enough-for-hmac-sha256-signing
+      issuer: cyber-heist-test
+      access-token-expiration: PT15M
+      refresh-token-expiration: P7D
+    cors:
+      allowed-origins: http://localhost:5173
+      allow-credentials: true
+      max-age: PT1H
+    rate-limit:
+      # Disabled by default so that suites exercising repeated logins are not
+      # throttled. AuthRateLimitFilterTest enables it explicitly.
+      enabled: false
+      max-attempts: 20
+      window: PT1M
+
+logging:
+  level:
+    root: WARN
+    com.cyberheist: INFO
+    org.springframework.security: WARN
+    org.flywaydb: WARN
