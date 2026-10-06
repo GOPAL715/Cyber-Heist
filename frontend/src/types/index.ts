@@ -69,6 +69,13 @@ export interface PlayerProfile {
   energyRegenerationIntervalSeconds: number
   /** Advisory only. The server re-checks affordability when a mission starts. */
   nextEnergyAt: string | null
+  /**
+   * Unspent skill points, granted one per level gained.
+   *
+   * <p>Server-authoritative: there is no endpoint that sets it, so the balance
+   * on screen is the balance the unlock path will test.
+   */
+  skillPoints: number
 }
 
 export interface RegisterPayload {
@@ -363,5 +370,115 @@ export interface ActiveBonus {
 /** The whole loadout, including empty slots and the active bonuses. */
 export interface EquipmentLoadout {
   equipment: EquipmentSlotView[]
+  bonuses: ActiveBonus[]
+}
+
+// ---------------------------------------------------------------------------
+// Skills (Phase 5)
+//
+// Every figure below is server-defined. The client renders the tree and sends
+// nothing but a skill id when the player wants the next level, so there is no
+// request shape in which a cost, level, effect or prerequisite could be forged.
+// ---------------------------------------------------------------------------
+
+/** Skill branches, mirroring the backend `SkillBranch` enum. */
+export type SkillBranch = 'SPEED' | 'INTELLIGENCE' | 'DEFENSE' | 'NETWORK'
+
+/**
+ * One level of a skill: what it costs and what it grants.
+ *
+ * <p>`effectValue` is the total that level grants, not an increment on the
+ * level below it, so the tree can show each level in isolation.
+ */
+export interface SkillLevelCost {
+  level: number
+  cost: number
+  effectType: ItemEffectType
+  effectValue: number
+}
+
+/** A prerequisite and the caller's progress against it. */
+export interface SkillPrerequisite {
+  skillId: string
+  code: string
+  name: string
+  requiredLevel: number
+  currentLevel: number
+}
+
+/**
+ * One skill, and the caller's relationship with it.
+ *
+ * <p>`canUnlock` is the server's verdict and is used directly for the button, so
+ * the screen cannot offer something the backend would refuse.
+ */
+export interface Skill {
+  id: string
+  code: string
+  name: string
+  description: string
+  branch: SkillBranch
+  /** 0 until the first level is taken; there is no row for it server-side. */
+  currentLevel: number
+  maxLevel: number
+  levels: SkillLevelCost[]
+  /** Points the next level costs. Absent when the skill is maxed. */
+  nextCost?: number
+  nextEffectType?: ItemEffectType
+  nextEffectValue?: number
+  canUnlock: boolean
+  /** True when a prerequisite is unmet. */
+  locked: boolean
+  /** Player-safe reason the skill cannot be taken. Absent when it can. */
+  blockedReason?: string
+  prerequisites: SkillPrerequisite[]
+}
+
+export interface SkillBranchView {
+  branch: SkillBranch
+  skills: Skill[]
+}
+
+/**
+ * What equipment and skills each contribute, before the shared cap is applied.
+ *
+ * <p>Attribution only. The numbers the game actually applies come from the
+ * capped totals, which is why this is presented as "what this source adds"
+ * rather than as the player's bonus.
+ */
+export interface BonusBreakdown {
+  equipment: Partial<Record<ItemEffectType, number>>
+  skills: Partial<Record<ItemEffectType, number>>
+}
+
+export interface SkillTree {
+  /** Unspent points. Server-authoritative; there is no endpoint to set it. */
+  skillPoints: number
+  branches: SkillBranchView[]
+  /** Per-source attribution, before the shared cap. Presentation only. */
+  bonuses: BonusBreakdown
+  /**
+   * The capped, combined totals the game actually applies.
+   *
+   * <p>This - not the uncapped split - is what the screen shows as the player's
+   * active bonuses, so the number on screen is the number in the payout.
+   */
+  effectiveBonuses: ActiveBonus[]
+}
+
+/** The result of taking one level, with the server's own arithmetic. */
+export interface SkillUnlockResult {
+  skillId: string
+  code: string
+  name: string
+  currentLevel: number
+  maxLevel: number
+  /** Points the server actually charged. */
+  cost: number
+  effectType: ItemEffectType
+  effectValue: number
+  /** Points remaining after the charge. */
+  balance: number
+  /** The player's effective bonuses after the change, already capped. */
   bonuses: ActiveBonus[]
 }

@@ -28,6 +28,7 @@ import com.cyberheist.puzzle.PuzzleService;
 import com.cyberheist.puzzle.dto.PuzzleChallengeView;
 import com.cyberheist.reward.Reward;
 import com.cyberheist.reward.RewardService;
+import com.cyberheist.bonus.PlayerBonusService;
 import com.cyberheist.shop.EquipmentBonusService;
 import com.cyberheist.shop.ItemEffectType;
 import org.slf4j.Logger;
@@ -76,7 +77,7 @@ public class MissionService {
     private final RewardService rewardService;
     private final PuzzleService puzzleService;
     private final EnergyService energyService;
-    private final EquipmentBonusService equipmentBonusService;
+    private final PlayerBonusService playerBonusService;
 
     private final Clock clock;
 
@@ -88,9 +89,9 @@ public class MissionService {
                           RewardService rewardService,
                           PuzzleService puzzleService,
                           EnergyService energyService,
-                          EquipmentBonusService equipmentBonusService) {
+                          PlayerBonusService playerBonusService) {
         this(missionRepository, progressRepository, profileRepository, puzzleRepository,
-                rewardService, puzzleService, energyService, equipmentBonusService, Clock.systemUTC());
+                rewardService, puzzleService, energyService, playerBonusService, Clock.systemUTC());
     }
 
     MissionService(MissionRepository missionRepository,
@@ -100,7 +101,7 @@ public class MissionService {
                    RewardService rewardService,
                    PuzzleService puzzleService,
                    EnergyService energyService,
-                   EquipmentBonusService equipmentBonusService,
+                   PlayerBonusService playerBonusService,
                    Clock clock) {
         this.missionRepository = missionRepository;
         this.progressRepository = progressRepository;
@@ -109,7 +110,7 @@ public class MissionService {
         this.rewardService = rewardService;
         this.puzzleService = puzzleService;
         this.energyService = energyService;
-        this.equipmentBonusService = equipmentBonusService;
+        this.playerBonusService = playerBonusService;
         this.clock = clock;
     }
 
@@ -207,7 +208,7 @@ public class MissionService {
         // the catalogue.
         int energyCost = EquipmentBonusService.applyEnergyDiscount(
                 mission.getEnergyCost(),
-                equipmentBonusService.bonusFor(userId, ItemEffectType.ENERGY_EFFICIENCY));
+                playerBonusService.bonusFor(userId, ItemEffectType.ENERGY_EFFICIENCY));
 
         if (profile.getEnergy() < energyCost) {
             throw new InsufficientEnergyException(
@@ -359,7 +360,7 @@ public class MissionService {
         // amounts. This service never computes the final figures itself.
         Reward reward = RewardService.applyBonuses(
                 new Reward(mission.getXpReward(), mission.getCoinReward()),
-                equipmentBonusService.bonusesFor(userId));
+                playerBonusService.bonusesFor(userId));
         ProgressionResult progression = rewardService.grant(profile, reward);
 
         puzzle.submit(PuzzleAttemptStatus.SUCCEEDED, now);

@@ -98,7 +98,7 @@ describe('application routes', () => {
     )
   }
 
-  it.each(['/dashboard', '/missions', '/shop', '/inventory'])(
+  it.each(['/dashboard', '/missions', '/shop', '/skills', '/inventory'])(
     'keeps an unauthenticated visitor out of %s',
     async (path) => {
       // No session is stored, so the guard must redirect before any page -
@@ -107,6 +107,7 @@ describe('application routes', () => {
 
       expect(await screen.findByRole('heading', { name: /jack in/i })).toBeInTheDocument()
       expect(screen.queryByText(/Cyber Heist Shop/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/skill tree/i)).not.toBeInTheDocument()
       expect(screen.queryByText(/welcome back/i)).not.toBeInTheDocument()
     },
   )

@@ -5,13 +5,14 @@ A cyberpunk-themed browser game.
 - **Phase 1** — technical foundation and authentication.
 - **Phase 2** — player progression (XP, levels, coins, energy) and the mission system.
 - **Phase 3** — the puzzle engine and passive energy regeneration.
-- **Phase 4 (current)** — the item catalogue, shop, inventory and equipment.
+- **Phase 4** — the item catalogue, shop, inventory and equipment.
+- **Phase 5 (current)** — the skill tree and player abilities.
 
 Implemented gameplay loop:
 
 > View missions → start mission → **receive a puzzle** → solve it → submit →
 > server validates → rewards → update XP/coins/energy → level up →
-> **spend coins in the shop** → equip gear → **rewards improve**
+> **earn a skill point** → unlock a skill → **rewards improve**
 
 Skill trees, bosses, achievements, leaderboards, multiplayer, PvP,
 AI-generated content and payments are **out of scope** and are not implemented.
@@ -294,6 +295,179 @@ each is unit-tested:
 Concurrency: mission start and every energy read take a **pessimistic write lock**
 on the profile row (`PlayerProfileRepository.findByUserIdForUpdate`), so two
 simultaneous starts cannot both observe 78 energy and both spend 12.
+
+---
+
+## Skill tree
+
+Phase 5 adds a progression system that costs a different currency from gear.
+Coins buy items; skill points buy permanent abilities. Points come from levelling
+and cannot be bought, sold or granted by any request.
+
+```text
+MISSION ─▶ XP ─▶ LEVEL UP ─▶ +1 SKILL POINT ─▶ UNLOCK SKILL ─▶ BONUS
+```
+
+### The trust rule
+
+The frontend is never authoritative for any of the following:
+
+| Value | Decided by |
+| --- | --- |
+| Skill point balance | `player_profiles.skill_points` |
+| Skill level | `player_skills.current_level` |
+| Skill cost | `skill_levels.skill_point_cost` |
+| Skill effect | `skill_levels.effect_type` / `effect_value` |
+| Prerequisites | `skill_prerequisites` |
+| Unlock status | `SkillTreeService` |
+
+The unlock endpoint declares **no request body at all**. "Take this skill to the
+next level" is the whole message; there is no DTO for a cost, a level, an effect
+or a prerequisite to bind to. A body carrying
+`{"cost": 1, "level": 5, "effectValue": 999999, "skillPoints": 9999}` is not
+"ignored" — it has nowhere to go.
+
+There is deliberately **no `PUT /player/skill-points`**. Points are granted by
+`ProgressionService` and spent by `SkillTreeService`; neither direction is
+something a client may state. `PUT`/`PATCH` on the collection return `405`.
+
+### Earning points
+
+One point per level gained, granted in `ProgressionService.awardExperience` —
+the single place a level changes, and therefore the single place a point is
+earned. Hooking it there rather than in `RewardService` means every future XP
+source gets the grant for free.
+
+The amount is **`levelsGained`, not 1**, so one large award pays for every
+threshold it crosses:
+
+| Award | Result | Points |
+| --- | --- | --- |
+| 100 XP from level 1 | level 2 | +1 |
+| 250 XP from level 1 | level 3 (two thresholds) | **+2** |
+| 813 XP from level 1 | level 5 (four thresholds) | **+4** |
+
+Existing players get `0` from the migration's column default; new players get `0`
+from the entity constructor. Nobody can start with points they did not earn.
+
+### The tree
+
+Four branches of three skills, five levels each. `Rapid Execution 1/5` means the
+first of five levels is taken; the next level is a bigger number of the same
+bonus, never a different one.
+
+| Branch | Skills | Theme |
+| --- | --- | --- |
+| `SPEED` | Rapid Execution → Quick Response → Overclock | Move faster, last longer |
+| `INTELLIGENCE` | Cipher Mastery → Pattern Analysis → Neural Processing | Read the target, earn more XP |
+| `DEFENSE` | Energy Shield → Efficient Systems → Hardened Core | Absorb the cost of a run |
+| `NETWORK` | Signal Tracing → Packet Analysis → Deep Access | Reach further, take more |
+
+**Prerequisites** are edges, not columns: each skill may have several
+requirements, and `skill_id` is the gated skill while `required_skill_id` is what
+must be reached first. Each skill needs level 2 of the one before it, and the
+third needs level 3 of the second, so no branch can be rushed on its own.
+
+All prerequisite evaluation lives in `SkillTreeService`. No other service
+consults a prerequisite or a cost, so a rule cannot be enforced on one path and
+forgotten on another.
+
+### Balance lives in the database
+
+`skill_levels` holds one row per level with its cost and its effect. Nothing about
+the numbers is hardcoded in Java, so re-tuning the tree is a migration and
+`SkillTreeService` never has to know that level 4 costs two points — it reads the
+row. That is the same reasoning that put item effects in a table in Phase 4.
+
+### Levels, not sums
+
+A skill at level *n* contributes the value defined for level *n*, not the sum of
+levels 1..*n*. Each row is the total that level grants, which keeps the ladder
+readable in the table and makes aggregation one lookup per skill rather than a
+prefix sum.
+
+### The economy
+
+A player earns one point per level and the level cap is 100, so **99 points
+exist** across a full run. Each skill costs `1+1+2+2+3 = 9` points to max, and
+there are 12 skills: **108 points of content against 99 available.**
+
+The tree is deliberately larger than the currency, so a player cannot max
+everything and has to choose. Prerequisite levels compound that: a single branch
+needs 27 points, more than a quarter of a lifetime's earnings. Costs are modest
+and rise with level so the first level of anything is reachable early.
+
+### Combining gear and skills
+
+Phase 4 had one source of bonuses; Phase 5 adds a second, and
+`PlayerBonusService` is what stops that becoming two competing answers:
+
+```text
+EquipmentBonusService  ─┐
+                        ├─▶ PlayerBonusService ─▶ Missions / Energy
+SkillBonusService      ─┘
+```
+
+Each source returns **raw, uncapped** totals; `PlayerBonusService` sums them and
+caps the combined result once. Capping each source separately would let equipment
+and skills each reach 50% XP for a combined 100%, quietly doubling the ceiling
+Phase 4 balanced against. Summing first preserves the original economy ceiling,
+which the ceilings table above still states.
+
+The skill tree can genuinely reach it: maxing the four XP skills grants 61 raw,
+which is applied as 50.
+
+### Unimplemented effect types
+
+`MISSION_SPEED` and `PUZZLE_BONUS` are valid skill effect types — stored,
+aggregated, capped, returned and displayed — but they do not yet change any
+mechanic, exactly as in Phase 4.
+
+There is no honest lever for either. Mission duration is advisory, so there is
+nothing for a speed bonus to shorten, and `PuzzleProvider`'s contract requires a
+provider to be pure ("may read no player state"), so a puzzle bonus cannot be
+applied at generation time without breaking a Phase 3 guarantee. Inventing a
+mechanic purely to justify the number would be worse than reporting it as
+unimplemented. Both are called out in the UI as bonuses that are counted but not
+yet spent.
+
+### Cycle safety
+
+A cyclic prerequisite graph would make skills permanently unreachable. Self-
+reference and duplicate edges are impossible by CHECK constraint and primary
+key; a cycle across several rows cannot be expressed as a CHECK, so
+`SkillTreeService` validates the whole graph at startup and **fails the boot**
+if it finds one — the same fail-fast approach `PuzzleService` takes for an
+unclaimed puzzle type. A broken catalogue is a deployment fault, not something a
+player should discover mid-run.
+
+The walk is iterative, so a deep chain cannot overflow the stack.
+
+### Representation of "not learned"
+
+**A missing `player_skills` row means level 0.** Rows are created on the first
+upgrade and never pre-seeded, so the table holds only what was actually learned
+rather than a row per player per skill. It also means a skill added in a later
+phase needs no backfill: existing players simply have no row for it.
+
+### Unlock flow
+
+```text
+POST /player/skills/{skillId}/unlock        request body: none
+   1  authenticate                             → 401
+   2  skill must exist and be active          → 404
+   3  LOCK the player's profile row           (pessimistic write)
+   4  not already at max level                 → 400
+   5  every prerequisite met at its level      → 400
+   6  balance covers skill_levels.cost         → 400
+   7  deduct points + raise the level          (one transaction)
+```
+
+The profile lock is taken first, which serialises both competing cases: two
+requests spending the same points, and two requests taking the same level of the
+same skill. It is also the order the rest of the application uses — profile before
+anything else — so no request can hold a skill lock while waiting for the
+profile. Every rejection happens before the first write.
 
 ---
 
@@ -621,7 +795,7 @@ Open <http://localhost:5173>. The browser calls the API directly at
 ## Running the tests
 
 ```bash
-# Backend — 332 tests
+# Backend — 376 tests
 cd backend
 mvn test
 
@@ -652,8 +826,42 @@ What the Phase 4 suites cover:
 | `EquipmentBonusRulesTest` | Rounding table, determinism sweep, energy floor at 1, cap clamping, reward modification |
 | `StarterAndBonusIntegrationTest` | Free starter item, auto-equipped, grants a bonus, mission reward = base + bonus, unequip removes it, energy discount, bonus injection ignored |
 
-Every Phase 1–3 regression test still passes. No test was removed or weakened;
-the Phase 4 count is 332 against a 263 baseline.
+Every Phase 1–4 regression test still passes. No test was removed or weakened;
+the Phase 5 count is 376 against a 332 baseline.
+
+The Phase 5 suites cover:
+
+| Suite | Covers |
+| --- | --- |
+| `SkillTreeIntegrationTest` | Four branches in order, level and cost reporting, locked reasons, prerequisites with progress, per-source bonus breakdown, no skill-point setter (`405`) |
+| `SkillUnlockIntegrationTest` | Success, table cost honoured, insufficient points, prerequisite enforced, required *level* enforced, max level refused, unknown and malformed ids, body tampering, per-player isolation |
+| `SkillPointProgressionIntegrationTest` | One point per level, **one per level crossed** on a multi-level jump, large jumps, nothing without a level-up, accumulation, immediate spendability |
+| `PlayerBonusIntegrationTest` | Combined capping in isolation, ceilings unchanged per type, equipment+skill stacking, a maxed skill tree still capped at 50%, skill energy discount reaching a mission, caller-scoped bonuses |
+
+### Live HTTP verification
+
+Two scripts start the real application and exercise the API over HTTP with real
+bearer tokens:
+
+```bash
+cd backend
+mvn clean package
+mvn dependency:build-classpath -Dmdep.outputFile=target/cp.txt
+powershell -File verify-live.ps1         # Phase 4: shop, inventory, equipment (28 checks)
+powershell -File verify-live-skills.ps1  # Phase 5: skill tree (20 checks)
+```
+
+The Phase 5 script covers registration, a zero starting balance, the tree and its
+server-defined values, prerequisite and affordability refusals, **points earned
+by actually playing missions**, an unlock charged at the catalogue cost, a skill
+bonus reaching a live mission's energy cost (20 → 19 at +3%), equipment and
+skill bonuses combining to the capped effective total, a forged cost/level/
+effect/balance being ignored, `PUT` returning `405`, per-player isolation,
+authentication and unknown ids.
+
+Because no PostgreSQL credentials are available, both scripts point the
+application at an H2 in-memory database in PostgreSQL mode. **This verifies the
+API and the business rules, not PostgreSQL.**
 
 The concurrency test is the one that matters most economically. With 800 coins,
 it fires two simultaneous requests for items costing 750 and 550 — 1300 coins of
@@ -688,10 +896,6 @@ aggregation, a full mission played to a server-calculated payout, unequipping,
 duplicate purchase, price tampering, bonus tampering, cross-player access in both
 directions, insufficient coins, retired items and unauthenticated access.
 
-Because no PostgreSQL credentials are available, the script points the
-application at an H2 in-memory database in PostgreSQL mode. **This verifies the
-API and the business rules, not PostgreSQL.**
-
 ---
 
 ## Database schema
@@ -706,8 +910,9 @@ creates or alters anything — `create` and `update` are deliberately not used.
 | `V3__seed_missions.sql` | 15 seeded missions across 5 categories |
 | `V4__puzzle_attempts_and_energy_regen.sql` | `missions.puzzle_type`, `player_profiles.last_energy_update`, `puzzle_attempts` |
 | `V5__inventory_equipment_shop.sql` | `items`, `item_effects`, `player_inventory`, `player_equipment` + 15 seeded items |
+| `V6__skill_tree.sql` | `skills`, `skill_levels`, `skill_prerequisites`, `player_skills`, `player_profiles.skill_points` + 12 seeded skills |
 
-V1–V4 are never modified; Phases 3 and 4 are entirely additive.
+V1–V5 are never modified; Phases 3, 4 and 5 are entirely additive.
 
 ### `users`
 
@@ -733,8 +938,11 @@ V1–V4 are never modified; Phases 3 and 4 are entirely additive.
 | `coins` | `BIGINT` | `100` |
 | `energy` | `INTEGER` | `100` |
 | `last_energy_update` | `TIMESTAMPTZ` | **added in V4** — regeneration anchor |
+| `skill_points` | `INTEGER` | **added in V6**, default `0`, `>= 0` |
 
 Created in the same transaction as the user, ready for future game systems.
+`skill_points` is granted only by `ProgressionService` on a level-up and spent
+only by `SkillTreeService`; the entity exposes no public setter for it.
 
 ### `refresh_tokens`
 
@@ -893,6 +1101,62 @@ The row references an *inventory* row rather than an item, so the join back to
 the item definition is explicit and the loadout cannot point at something the
 player does not own.
 
+### `skills`
+
+The server-owned skill definitions. Written by migration alone — no endpoint
+creates, edits or retires a skill.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key, fixed per seeded skill |
+| `code` | `VARCHAR(64)` | **Unique**, stable external id |
+| `name` | `VARCHAR(120)` | |
+| `description` | `VARCHAR(500)` | |
+| `branch` | `VARCHAR(20)` | `SPEED` \| `INTELLIGENCE` \| `DEFENSE` \| `NETWORK` |
+| `max_level` | `INTEGER` | `> 0` and `<= 100` |
+| `active` | `BOOLEAN` | |
+
+### `skill_levels`
+
+The balance table: what each level costs and grants.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key |
+| `skill_id` | `UUID` | FK → `skills` (cascade) |
+| `level` | `INTEGER` | `> 0` |
+| `skill_point_cost` | `INTEGER` | `> 0` — level 1 must be affordable |
+| `effect_type` | `VARCHAR(32)` | The same five controlled types as `item_effects` |
+| `effect_value` | `INTEGER` | 0–100, the **total this level** grants |
+
+**`UNIQUE (skill_id, level)`** — one definition per level, so a lookup is
+unambiguous and a level's effect cannot depend on insertion order.
+
+### `skill_prerequisites`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `skill_id` | `UUID` | The **gated** skill |
+| `required_skill_id` | `UUID` | What must be reached first |
+| `required_level` | `INTEGER` | `> 0` |
+
+Composite primary key `(skill_id, required_skill_id)`, so a duplicate edge is
+rejected by the database. `CHECK (skill_id <> required_skill_id)` blocks
+self-reference. Cycles across several rows cannot be expressed as a CHECK and are
+rejected at startup by `SkillTreeService`.
+
+### `player_skills`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key |
+| `user_id` | `UUID` | FK → `users` (cascade) |
+| `skill_id` | `UUID` | FK → `skills` (cascade) |
+| `current_level` | `INTEGER` | `> 0` — a row exists only once level 1 is reached |
+
+**`UNIQUE (user_id, skill_id)`**. No row means level 0, so the table holds only
+what was actually learned and a skill added later needs no backfill.
+
 ---
 
 ## API overview
@@ -923,6 +1187,8 @@ All endpoints are under `/api/v1`. Success bodies use
 | `GET` | `/player/equipment` | bearer | `200` | All five slots plus the aggregated bonuses |
 | `POST` | `/player/equipment/{slot}` | bearer | `200` | Equip `{ inventoryItemId }`, replacing the slot |
 | `DELETE` | `/player/equipment/{slot}` | bearer | `200` | Empty a slot; the item stays owned |
+| `GET` | `/player/skills` | bearer | `200` | The skill tree: balance, every skill, levels, prerequisites, bonuses |
+| `POST` | `/player/skills/{skillId}/unlock` | bearer | `200` | Take the next level. **No request body** |
 
 Energy is exposed on `/player/profile` rather than through a separate endpoint,
 so the client needs one request to draw the meter and decide whether a mission
@@ -1122,10 +1388,11 @@ screen: `MISSION COMPLETE` / `ACCESS DENIED` / `CONNECTION TIMEOUT`.
 | --- | --- |
 | `200` | Successful read or token operation, including a rejected answer |
 | `201` | Account created, **item purchased** |
-| `400` | Validation failure, malformed JSON, energy too low, not started, inactive mission/item, **not enough coins**, item does not fit the slot, unknown slot |
+| `400` | Validation failure, malformed JSON, energy too low, not started, inactive mission/item, **not enough coins**, **not enough skill points, prerequisite unmet or skill maxed**, item does not fit the slot, unknown slot |
 | `401` | Missing/invalid/expired token, bad credentials |
 | `403` | Authenticated but below the mission's required level |
 | `404` | Unknown endpoint or resource, **including a puzzle that is not this player's or not this mission's, or an inventory row belonging to someone else** |
+| `405` | **Known path, unsupported verb** — e.g. `PUT /player/skills`, which does not and must not exist |
 | `409` | Duplicate username or email, mission already completed, puzzle already submitted, **item already owned** |
 | `429` | Too many authentication attempts |
 | `500` | Unexpected error (details logged, never returned) |
@@ -1285,6 +1552,13 @@ any service runs.
 | Bonus aggregation | Exactly one implementation, capped per effect type. No mechanic may add a percentage to a reward on its own. |
 | Deterministic payouts | Integer arithmetic with halves rounding up; no floating point in any reward or cost calculation. |
 | Starter item | Granted by a hard-coded code inside the registration transaction. A registration request cannot name or choose it. |
+| Skill point balance | Granted only by `ProgressionService` on a level-up, one per level **crossed**, and spent only by `SkillTreeService`. The entity has no public setter and no endpoint writes the column. |
+| Skill cost and effect | Read from `skill_levels`. The unlock endpoint declares no request body, so no cost, level or effect can be supplied. |
+| Prerequisites | Evaluated only in `SkillTreeService`, under the profile lock, immediately before the write. |
+| Prerequisite cycles | Rejected at startup: a cyclic graph would make skills permanently unreachable, so the boot fails rather than a player discovering it. |
+| Concurrent unlocks | The profile row is locked first, so two requests cannot spend the same points or take the same level twice. |
+| No skill-point setter | `PUT`/`PATCH` on `/player/skills` return `405`. There is no route that can mint points. |
+| Bonus aggregation | Exactly one implementation (`PlayerBonusService`), summing equipment and skills and capping the combined total once. No mechanic may add a percentage on its own. |
 | User enumeration | Unknown accounts and wrong passwords return an identical `401` message, and the unknown-account path still performs a hash comparison so timings match. |
 | Disabled accounts | Rejected at login, and any already-issued access token stops working immediately. |
 | Error leakage | Stack traces, SQL and JWT internals are logged server-side only. |
@@ -1313,19 +1587,22 @@ MISSION BOARD  ──start──▶  PUZZLE SCREEN  ──submit──▶  RESUL
 | `components/missions.tsx` | Mission card, now labelled with its puzzle type |
 | `components/equipment.tsx` | `ShopItemCard`, `InventoryItemCard`, `LoadoutPanel`, `RarityBadge`, `EffectList`, `BonusChip` |
 | `components/equipmentConstants.ts` | Slot labels, effect labels, rarity colours. **No prices or bonuses** |
+| `components/skills.tsx` | `SkillCard`, `SkillBranchColumn` |
+| `components/skillConstants.ts` | Branch headings, effect colours, level wording. **No costs or percentages** |
 
-Routes are `/dashboard`, `/missions`, `/shop`, `/inventory` and `/profile`, all
-inside the authenticated layout. Missions remain the primary action on the
-dashboard; the shop and inventory are reachable from the navigation and from the
-dashboard's gear panel.
+Routes are `/dashboard`, `/missions`, `/shop`, `/skills`, `/inventory` and
+`/profile`, all inside the authenticated layout. Missions remain the primary
+action on the dashboard; the shop, inventory and skill tree are reachable from
+the navigation and from the dashboard's progression panel.
 
-The frontend holds **no price table, no rarity list and no bonus arithmetic**.
-Rarity colours and slot labels are the only things it decides. Prices come from
-the catalogue response, affordability is a comparison of two server figures used
-only to disable a button, and the bonuses shown are the server's capped
-aggregates rather than a local sum. Nothing toggles equipped state locally
-either — the inventory re-reads after every action, so a rejected request cannot
-leave the screen claiming otherwise.
+The frontend holds **no price table, no rarity list, no point cost and no bonus
+arithmetic**. Rarity colours, branch headings and slot labels are the only things
+it decides. Prices come from the catalogue response, point costs come from the
+tree response, affordability is the server's `canUnlock` verdict rather than a
+local comparison, and the bonuses shown are the server's capped effective totals
+rather than a local sum. Nothing is patched locally: the shop, the inventory and
+the tree all re-read after an action, so a rejected request cannot leave the
+screen claiming otherwise.
 
 The result screen shows rewards and level-ups on success, and never reveals the
 correct answer on failure. The energy meter renders `⚡ 82 / 100` with
@@ -1353,6 +1630,8 @@ cyber-heist/
 │   │   │   └── dto/       PuzzleChallengeView — the answer is dropped here
 │   │   ├── energy/        EnergyService, EnergySnapshot — lazy regeneration
 │   │   ├── shop/          Item catalogue, inventory, equipment, ShopController
+│   │   ├── skill/         Skill catalogue, SkillTreeService, SkillBonusService, controller
+│   │   ├── bonus/         PlayerBonusService — equipment + skills, capped once
 │   │   ├── reward/        RewardService — the single payout path
 │   │   ├── progression/   LevelCurve, ProgressionService, ProgressionResult
 │   │   ├── common/        ApiResponse, ApiErrorResponse, auditing base
@@ -1360,22 +1639,23 @@ cyber-heist/
 │   ├── src/main/resources/
 │   │   ├── application.yml
 │   │   └── db/migration/  V1 core · V2 mission system · V3 seed · V4 puzzles + regen
-│   │                      · V5 inventory + equipment + shop
-│   ├── src/test/          332 tests
-│   ├── verify-live.ps1    Live HTTP verification of the whole Phase 4 flow
+│   │                      · V5 inventory + equipment + shop · V6 skill tree
+│   ├── src/test/          376 tests
+│   ├── verify-live.ps1         Phase 4 live HTTP verification
+│   ├── verify-live-skills.ps1  Phase 5 live HTTP verification
 │   ├── Dockerfile
 │   └── pom.xml
 ├── frontend/
 │   ├── src/
-│   │   ├── components/    UI primitives, MissionBoard, puzzle.tsx, equipment.tsx
-│   │   ├── pages/         Login, Register, Dashboard, Missions, Shop, Inventory, Profile, 404
+│   │   ├── components/    UI primitives, MissionBoard, puzzle.tsx, equipment.tsx, skills.tsx
+│   │   ├── pages/         Login, Register, Dashboard, Missions, Shop, Skills, Inventory, Profile, 404
 │   │   ├── layouts/       Auth and dashboard shells (incl. main navigation)
-│   │   ├── services/      apiClient, auth/user/player/mission/shop/equipment services
+│   │   ├── services/      apiClient, auth/user/player/mission/shop/skill/equipment services
 │   │   ├── context/       AuthContext (incl. transparent token refresh)
 │   │   ├── routes/        Route table and auth guards
 │   │   ├── types/         Shared TypeScript types
 │   │   ├── utils/         Client-side validation
-│   │   └── test/          Vitest suites — 100 tests
+│   │   └── test/          Vitest suites — 113 tests
 │   └── package.json
 ├── docker-compose.yml
 ├── .env.example
@@ -1398,20 +1678,36 @@ no change. Add a contract test to `PuzzleProviderContractTest` and a provider
 test; the shared contract suite will check determinism and option validity for
 the new type for free.
 
+`PlayerBonusService` sums equipment and skills and caps the combined result once,
+so Phase 4's ceiling survives the addition of a second source. Nothing else needs
+changing.
+
 ### Adding a new item, category, slot or effect
 
 1. Add the constant to `ItemCategory`, `ItemRarity`, `EquipmentSlot` or
    `ItemEffectType`, and extend the matching CHECK constraint in a **new**
-   migration. Never edit V1–V5.
+   migration. Never edit V1–V6.
 2. Seed the item row, and its `item_effects` rows after it, so the foreign key can
    be satisfied.
 3. Nothing else changes. The shop, inventory and loadout read the tables
    generically, and `LoadoutService` iterates `EquipmentSlot.values()`.
 
 If the new effect type should modify a mechanic, apply it in
-`EquipmentBonusService` **and only there** — add a cap in the `switch`, then have
-the owning service read `bonusFor(userId, TYPE)`. Do not add a percentage in a
-second place, and do not read equipment from inside a puzzle provider.
+`PlayerBonusService` **and only there** — add a ceiling, then have the owning
+service read `bonusFor(userId, TYPE)`. Do not add a percentage in a second place,
+and do not read equipment or skills from inside a puzzle provider.
+
+### Adding a new skill or branch
+
+1. Add the branch constant to `SkillBranch` if needed, and extend its CHECK
+   constraint in a new migration.
+2. Seed the `skills` row, then its `skill_levels` rows with a cost and effect for
+   every level up to `max_level`, then any `skill_prerequisites` edges.
+3. Nothing else changes. The tree is read generically and `SkillTreeService`
+   iterates `SkillBranch.values()`.
+
+A cyclic prerequisite graph will now fail the boot rather than ship, which is
+the intended outcome — check the edges before migrating them.
 
 ### Adding a Phase 4-style reward source
 
@@ -1433,8 +1729,17 @@ source gets equipment bonuses without any change of its own.
   against a real instance.
 - `MISSION_SPEED` and `PUZZLE_BONUS` are defined, capped and surfaced but do not
   yet change anything. Mission duration is advisory and puzzles are generated
-  from a seed, so there is no mechanic for them to influence yet. They will
-  appear in the UI as bonuses that are counted but not spent.
+  from a seed, so there is no mechanic for them to influence. They appear in the
+  UI as bonuses that are counted but not spent.
+- The skill tree is linear per branch — three skills in a chain. There are no
+  alternative paths, no respec, and no way to refund a point. A player who
+  invests early in the wrong branch is committed.
+- Skill points have no other source than levelling. There is no way to earn them
+  from missions, achievements or purchases, so a player who maxes what they can
+  reach has nothing left to spend them on.
+- With 99 points available against 108 points of content, the tree is
+  intentionally not completable. That is a balance decision, not an oversight,
+  but it has not been playtested.
 - A player can own only one copy of each item, so equipment cannot be stacked
   and there is nothing to upgrade. The `quantity` column and the
   `UNIQUE (user_id, item_id)` constraint would both need revisiting if stacking

@@ -25,6 +25,10 @@ import java.util.UUID;
  * @param nextEnergyAt        when the next unit is due. Advisory only: the server
  *                             re-checks affordability when a mission starts, so
  *                             a client that trusts this cannot overdraw itself.
+ * @param skillPoints         unspent skill points. Added in Phase 5 so the header
+ *                             can show the balance without a second request, on
+ *                             the same reasoning as the energy fields. Server
+ *                             authoritative: there is no endpoint that sets it.
  */
 public record PlayerProfileResponse(
         UUID id,
@@ -40,6 +44,7 @@ public record PlayerProfileResponse(
         boolean energyRegenerationEnabled,
         int energyRegenerationAmount,
         long energyRegenerationIntervalSeconds,
-        Instant nextEnergyAt
+        Instant nextEnergyAt,
+        int skillPoints
 ) {
 }

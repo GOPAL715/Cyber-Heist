@@ -17,6 +17,8 @@ import type {
   RegisterPayload,
   ShopCatalogue,
   ShopItem,
+  SkillTree,
+  SkillUnlockResult,
 } from '@/types'
 
 /** Registration, login, refresh and logout calls. */
@@ -90,6 +92,26 @@ export const shopService = {
   /** Buys an item at its server-defined price. */
   purchase(token: string, itemId: string): Promise<PurchaseResult> {
     return request<PurchaseResult>(`/api/v1/player/shop/items/${itemId}/purchase`, {
+      method: 'POST',
+      token,
+    })
+  },
+}
+
+/**
+ * Skill tree endpoints.
+ *
+ * <p>`unlock` sends a skill id and nothing else. The cost, the level reached,
+ * the effect granted and whether the player can afford it are all decided by the
+ * server, so there is no request shape here that could state them.
+ */
+export const skillService = {
+  tree(token: string): Promise<SkillTree> {
+    return request<SkillTree>('/api/v1/player/skills', { token })
+  },
+
+  unlock(token: string, skillId: string): Promise<SkillUnlockResult> {
+    return request<SkillUnlockResult>(`/api/v1/player/skills/${skillId}/unlock`, {
       method: 'POST',
       token,
     })

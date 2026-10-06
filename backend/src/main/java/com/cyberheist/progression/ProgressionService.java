@@ -9,9 +9,22 @@ import org.springframework.stereotype.Service;
  * <p>Deliberately knows nothing about missions or rewards: it takes an XP amount
  * and a profile, and owns the XP/level math only. That keeps it reusable for
  * future sources of XP such as daily challenges or achievements.
+ *
+ * <h2>Skill points</h2>
+ * Phase 5 makes this the single place a level changes, and therefore the single
+ * place a skill point is granted. Hooking it here rather than in
+ * {@code RewardService} means every future XP source gets the grant for free and
+ * two sources cannot disagree about how many were earned.
+ *
+ * <p>The amount is {@code levelsGained} rather than a flat 1, so one large reward
+ * that crosses several thresholds grants a point for each level and not one for
+ * the whole jump.
  */
 @Service
 public class ProgressionService {
+
+    /** Skill points granted per level gained. */
+    private static final int SKILL_POINTS_PER_LEVEL = 1;
 
     private final LevelCurve levelCurve;
 
@@ -31,14 +44,18 @@ public class ProgressionService {
         int levelBefore = profile.addExperience(amount, levelCurve);
         int levelAfter = profile.getLevel();
 
+        int levelsGained = Math.max(0, levelAfter - levelBefore);
+        // One point per level crossed, so a jump from level 1 to level 3 pays 2.
+        profile.addSkillPoints(levelsGained * SKILL_POINTS_PER_LEVEL);
+
         return new ProgressionResult(
                 levelBefore,
                 levelAfter,
                 profile.getExperience(),
                 levelCurve.xpIntoLevel(levelAfter, profile.getExperience()),
                 levelCurve.xpForNextLevel(levelAfter),
-                levelAfter > levelBefore,
-                Math.max(0, levelAfter - levelBefore)
+                levelsGained > 0,
+                levelsGained
         );
     }
 

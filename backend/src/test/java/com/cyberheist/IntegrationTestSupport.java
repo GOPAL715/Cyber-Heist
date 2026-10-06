@@ -13,6 +13,8 @@ import com.cyberheist.shop.Item;
 import com.cyberheist.shop.ItemRepository;
 import com.cyberheist.shop.PlayerInventoryItem;
 import com.cyberheist.shop.PlayerInventoryRepository;
+import com.cyberheist.skill.Skill;
+import com.cyberheist.skill.SkillRepository;
 import com.cyberheist.user.Role;
 import com.cyberheist.user.User;
 import com.cyberheist.user.UserRepository;
@@ -71,6 +73,12 @@ public abstract class IntegrationTestSupport {
 
     @Autowired
     protected PlayerInventoryRepository inventoryRepository;
+
+    @Autowired
+    protected SkillRepository skillRepository;
+
+    @Autowired
+    protected com.cyberheist.progression.ProgressionService progressionService;
 
     @Autowired
     protected MissionProgressRepository progressRepository;
@@ -324,11 +332,88 @@ public abstract class IntegrationTestSupport {
      *
      * <p>Used only where the case under test needs a mission at a given tier;
      * level gating itself is covered by the Phase 2 progression tests.
+     *
+     * <p>Writes the field directly and so grants <em>no</em> skill points. Tests
+     * about skill points must use {@link #applyExperience}, which goes through
+     * the real {@code ProgressionService} path that awards them.
      */
     protected void grantExperience(String email, long xp) {
         PlayerProfile profile = profileOf(email);
         profile.addExperience(xp, levelCurve);
         profileRepository.saveAndFlush(profile);
+    }
+
+    /**
+     * Awards XP through {@code ProgressionService}, so skill points are granted
+     * exactly as they are in production.
+     *
+     * <p>This is the only way a test should create skill points from XP, and it
+     * is what makes the multi-level-up rule testable: one call that crosses
+     * several thresholds has to award a point per level.
+     *
+     * @return the progression result, so a test can assert levels gained
+     */
+    protected com.cyberheist.progression.ProgressionResult applyExperience(String email, long xp) {
+        PlayerProfile profile = profileOf(email);
+        var result = progressionService.awardExperience(profile, xp);
+        profileRepository.saveAndFlush(profile);
+        return result;
+    }
+
+    /** Sets the unspent skill point balance directly, for setup only. */
+    protected void setSkillPoints(String email, int points) {
+        PlayerProfile profile = profileOf(email);
+        try {
+            java.lang.reflect.Field field = PlayerProfile.class.getDeclaredField("skillPoints");
+            field.setAccessible(true);
+            field.set(profile, points);
+            profileRepository.saveAndFlush(profile);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Unable to set the skill point balance in a test", ex);
+        }
+        assertThat(profileOf(email).getSkillPoints()).isEqualTo(points);
+    }
+
+    /** Stable id of a seeded skill, addressed by its catalogue code. */
+    protected UUID skillId(String code) {
+        return skillRepository.findByCode(code)
+                .map(Skill::getId)
+                .orElseThrow(() -> new IllegalStateException("Seeded skill not found: " + code));
+    }
+
+    /** The caller's skill tree, as {@code GET /player/skills} returns it. */
+    protected JsonNode skillTree(String token) throws Exception {
+        return getData(token, "/api/v1/player/skills");
+    }
+
+    /**
+     * Unlocks the next level of a skill through the real endpoint.
+     *
+     * @throws AssertionError if the call did not return 200
+     */
+    protected JsonNode unlockSkill(String token, UUID skillId) throws Exception {
+        MvcResult result = mockMvc.perform(authPost("/api/v1/player/skills/" + skillId + "/unlock", token))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+    }
+
+    /** Unlocks without asserting the status, so failure cases can be driven. */
+    protected MvcResult unlockSkillExpectingFailure(String token, UUID skillId) throws Exception {
+        return mockMvc.perform(authPost("/api/v1/player/skills/" + skillId + "/unlock", token))
+                .andReturn();
+    }
+
+    /** Finds one skill's view inside a skill tree response. */
+    protected JsonNode findSkill(JsonNode tree, String code) {
+        for (JsonNode branch : tree.path("branches")) {
+            for (JsonNode skill : branch.path("skills")) {
+                if (code.equals(skill.path("code").asText())) {
+                    return skill;
+                }
+            }
+        }
+        throw new AssertionError("Skill " + code + " was not present in the tree");
     }
 
     /** Request body for {@code /auth/register}. */

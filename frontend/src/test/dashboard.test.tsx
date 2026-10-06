@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { saveSession } from '@/services/sessionStorage'
 import { jsonResponse, renderWithProviders, tokens } from './helpers'
@@ -27,6 +27,8 @@ const profile: PlayerProfile = {
   energyRegenerationAmount: 1,
   energyRegenerationIntervalSeconds: 300,
   nextEnergyAt: new Date(Date.now() + 120_000).toISOString(),
+  /** Granted one per level gained; Phase 5 added it to the profile response. */
+  skillPoints: 2,
 }
 
 /** A mission the player can act on right away. */
@@ -116,9 +118,15 @@ describe('DashboardPage', () => {
 
     expect(await screen.findByText(/welcome back/i)).toBeInTheDocument()
     expect(screen.getByText('shadow')).toBeInTheDocument()
-    expect(screen.getByText('Coins')).toBeInTheDocument()
-    expect(screen.getByText('Level')).toBeInTheDocument()
-    expect(screen.getByText('Coins')).toBeInTheDocument()
+
+    // Scoped to the progress panel: the mission board also labels a coin column,
+    // so a page-wide "Coins" query would be ambiguous.
+    const progress = screen.getByLabelText('Player progress')
+    expect(within(progress).getByText('Coins')).toBeInTheDocument()
+    expect(within(progress).getByText('Level')).toBeInTheDocument()
+    expect(within(progress).getByText('Skill Points')).toBeInTheDocument()
+    // Skill points are rendered from the API, not computed on the client.
+    expect(within(progress).getByText('2')).toBeInTheDocument()
 
     // Energy is shown as a balance against the cap, with the regeneration rate
     // read from the server rather than hardcoded.

@@ -12,6 +12,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -124,6 +125,23 @@ public class GlobalExceptionHandler {
         log.warn("Data integrity violation on {}: {}",
                 request.getRequestURI(), ex.getMostSpecificCause().getMessage());
         return build(HttpStatus.CONFLICT, "That request conflicts with existing data", request);
+    }
+
+    /**
+     * A known path reached with a verb it does not support.
+ *
+     * <p>Without this, {@code HttpRequestMethodNotSupportedException} fell through
+     * to the catch-all handler and reported 500, which told a caller the server
+     * had broken rather than that the request used the wrong method. That matters
+     * here: probing {@code PUT /player/skills} is exactly how a caller checks
+     * whether a dangerous endpoint exists, and the honest answer is 405.
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiErrorResponse> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        log.debug("Method {} not supported on {}", ex.getMethod(), request.getRequestURI());
+        return build(HttpStatus.METHOD_NOT_ALLOWED,
+                ex.getMethod() + " is not supported on this endpoint", request);
     }
 
     @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})

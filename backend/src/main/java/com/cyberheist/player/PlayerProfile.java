@@ -51,6 +51,21 @@ public class PlayerProfile extends AuditableEntity {
     @Column(name = "last_energy_update", nullable = false)
     private Instant lastEnergyUpdate;
 
+    /**
+     * Unspent skill points, granted one per level gained.
+     *
+     * <p>Added in V6. Defaults to 0 both for existing rows and for new players:
+     * the column default covers the first, and the constructor below sets it for
+     * the second, so no player can start with a balance they did not earn.
+     *
+     * <p>Like coins and energy this has no public setter. Points are only ever
+     * added by {@code ProgressionService} on a level-up and only ever removed by
+     * {@code SkillTreeService} spending them, so there is no request a client
+     * could make to mint them.
+     */
+    @Column(name = "skill_points", nullable = false)
+    private int skillPoints;
+
     protected PlayerProfile() {
         // for JPA
     }
@@ -64,6 +79,7 @@ public class PlayerProfile extends AuditableEntity {
         this.coins = coins;
         this.energy = energy;
         this.lastEnergyUpdate = Instant.now();
+        this.skillPoints = 0;
     }
 
     public UUID getId() {
@@ -96,6 +112,10 @@ public class PlayerProfile extends AuditableEntity {
 
     public Instant getLastEnergyUpdate() {
         return lastEnergyUpdate;
+    }
+
+    public int getSkillPoints() {
+        return skillPoints;
     }
 
     /**
@@ -143,6 +163,42 @@ public class PlayerProfile extends AuditableEntity {
             throw new IllegalArgumentException("Coin award must not be negative");
         }
         this.coins += amount;
+    }
+
+    /**
+     * Grants skill points, one per level gained.
+     *
+     * <p>Called only by {@code ProgressionService}, which is the single place a
+     * level changes. The amount is {@code levelsGained}, not 1, so a single large
+     * reward that crosses several thresholds grants a point for each of them
+     * rather than one point for the whole jump.
+     *
+     * @param levelsGained how many level boundaries the reward crossed
+     */
+    public void addSkillPoints(int levelsGained) {
+        if (levelsGained < 0) {
+            throw new IllegalArgumentException("Levels gained must not be negative");
+        }
+        this.skillPoints += levelsGained;
+    }
+
+    /**
+     * Spends skill points, refusing to go negative.
+     *
+     * <p>Used only by {@code SkillTreeService}, which holds the profile's
+     * pessimistic lock for the duration of the unlock, so the balance tested is
+     * the balance deducted from.
+     *
+     * @throws IllegalStateException when the player cannot afford the cost
+     */
+    public void spendSkillPoints(int amount) {
+        if (amount <= 0) {
+            throw new IllegalArgumentException("Skill point cost must be positive");
+        }
+        if (this.skillPoints < amount) {
+            throw new IllegalStateException("Insufficient skill points");
+        }
+        this.skillPoints -= amount;
     }
 
     /**

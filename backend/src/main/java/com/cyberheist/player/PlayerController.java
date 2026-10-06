@@ -84,7 +84,8 @@ public class PlayerController {
                 energy.regenerationEnabled(),
                 energy.regenerationAmount(),
                 energy.regenerationIntervalSeconds(),
-                energy.nextRegenerationAt()
+                energy.nextRegenerationAt(),
+                profile.getSkillPoints()
         ));
     }
 }

@@ -9,6 +9,7 @@ import { NotFoundPage } from '@/pages/NotFoundPage'
 import { RegisterPage } from '@/pages/RegisterPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { ShopPage } from '@/pages/ShopPage'
+import { SkillsPage } from '@/pages/SkillsPage'
 import { ProtectedRoute, PublicOnlyRoute } from './guards'
 
 /**
@@ -35,6 +36,7 @@ export function AppRoutes() {
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/missions" element={<MissionsPage />} />
           <Route path="/shop" element={<ShopPage />} />
+          <Route path="/skills" element={<SkillsPage />} />
           <Route path="/inventory" element={<InventoryPage />} />
           <Route path="/profile" element={<ProfilePage />} />
         </Route>

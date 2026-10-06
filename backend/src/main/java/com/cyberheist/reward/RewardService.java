@@ -20,12 +20,13 @@ import org.springframework.stereotype.Service;
  * <p>Kept separate from {@code MissionService} so other reward sources in later
  * phases (daily challenges, achievements, boss fights) reuse the same path.
  *
- * <h2>Equipment bonuses</h2>
- * Phase 4 modifiers are applied through {@link #applyBonuses} rather than by
- * each reward source, so the rule "base reward, then equipment, then final" is
- * implemented once. A future source of XP gets equipment bonuses by following
- * the same call, and no source can accidentally skip them. The bonuses must
- * already be capped; {@link EquipmentBonusService} is what does that.
+ * <h2>Equipment and skill bonuses</h2>
+ * Phase 5 modifiers are applied through {@link #applyBonuses} rather than by each
+ * reward source, so the rule "base reward, then bonuses, then final" is
+ * implemented once. A future source of XP gets bonuses by following the same
+ * call, and no source can accidentally skip them. The bonuses must already be
+ * capped; {@code PlayerBonusService} is what does that, by summing equipment and
+ * skills together before applying the ceiling.
  */
 @Service
 public class RewardService {

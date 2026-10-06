@@ -101,8 +101,9 @@ export function DashboardPage() {
           </div>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-3">
           <StatCard icon="🪙" label="Coins" value={profile.coins} accent="amber" />
+          <StatCard icon="◈" label="Skill Points" value={profile.skillPoints} accent="neon" />
           <EnergyMeter
             energy={profile.energy}
             maximum={profile.energyMaximum}
@@ -125,8 +126,8 @@ export function DashboardPage() {
       {loadout && <LoadoutPanel loadout={loadout} compact />}
 
       <section className="space-y-4">
-        <h3 className="text-xs uppercase tracking-[0.3em] text-slate-500">Gear</h3>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <h3 className="text-xs uppercase tracking-[0.3em] text-slate-500">Progression</h3>
+        <div className="grid gap-4 sm:grid-cols-3">
           <Link to="/shop" className="panel p-4 transition-colors hover:border-neon/40">
             <p className="text-sm font-bold uppercase tracking-wider text-neon">Visit the shop</p>
             <p className="mt-1 text-xs text-slate-400">
@@ -140,6 +141,16 @@ export function DashboardPage() {
             </p>
             <p className="mt-1 text-xs text-slate-400">
               Equip what you own and manage your loadout.
+            </p>
+          </Link>
+
+          <Link to="/skills" className="panel p-4 transition-colors hover:border-neon/40">
+            <p className="text-sm font-bold uppercase tracking-wider text-neon">
+              Spend your skill points
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              You have {profile.skillPoints} point{profile.skillPoints === 1 ? '' : 's'} to
+              invest in the tree.
             </p>
           </Link>
         </div>

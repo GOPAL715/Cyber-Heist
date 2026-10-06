@@ -28,9 +28,10 @@ import org.springframework.transaction.annotation.Transactional;
  * argument of any method here.
  *
  * <h2>Caps</h2>
- * Totals are clamped per effect type before anyone sees them, so no combination
- * of items can stack without limit. The caps live in this class rather than in
- * the database, because the database cannot enforce a sum across rows.
+ * Totals are clamped per effect type by {@code PlayerBonusService} after
+ * equipment and skills have been added together. The ceilings themselves are
+ * declared here, because they arrived with Phase 4 and are part of its
+ * contract: a loadout plus a skill tree cannot stack without limit.
  *
  * <h2>Rounding</h2>
  * All arithmetic is integer. {@code base + round(base * percent / 100)} is
@@ -73,7 +74,13 @@ public class EquipmentBonusService {
     }
 
     /**
-     * Aggregate bonuses for a player's current loadout, already capped.
+     * Aggregate bonuses for a player's current loadout.
+     *
+     * <p><strong>Returns raw, uncapped totals.</strong> Since Phase 5 a player's
+     * bonuses are the sum of equipment and skills, and the cap is applied once to
+     * that combined total by {@code PlayerBonusService}. Capping here as well
+     * would be harmless numerically but would misrepresent the split, and it would
+     * put the economy's ceiling in two places.
      *
      * <p>Only types with a non-zero total appear in the map, so a caller can
      * treat absence as "no bonus" without knowing every enum constant.
@@ -107,20 +114,38 @@ public class EquipmentBonusService {
         for (ItemEffect effect : effectRepository.findByItemIdIn(itemIds)) {
             totals.merge(effect.getEffectType(), effect.getEffectValue(), Integer::sum);
         }
-        totals.replaceAll(this::cap);
         totals.values().removeIf(total -> total <= 0);
         return Collections.unmodifiableMap(totals);
     }
 
-    /** The capped bonus of one type for a player; zero when nothing is equipped. */
-    @Transactional(readOnly = true)
-    public int bonusFor(UUID userId, ItemEffectType type) {
-        return bonusesFor(userId).getOrDefault(type, 0);
+/**
+     * Clamps a raw total to the ceiling for its effect type.
+ *
+     * <p>Since Phase 5 this is the <em>global</em> ceiling, applied by
+     * {@code PlayerBonusService} to equipment and skills together. The
+     * constants live here because they arrived with Phase 4 and are part of its
+     * contract.
+     */
+    public int cappedBonus(ItemEffectType type, int rawTotal) {
+        return capBonus(type, rawTotal);
     }
 
-    /** Clamps a raw total to the cap for its effect type. */
-    public int cappedBonus(ItemEffectType type, int rawTotal) {
-        return cap(type, rawTotal);
+    /**
+     * The clamping rule itself, as static arithmetic.
+     *
+     * <p>Static so {@code PlayerBonusService} can apply the ceiling without
+     * holding a reference to this service purely to reach it, and so the rule
+     * can be exercised without constructing a Spring context.
+     */
+    public static int capBonus(ItemEffectType type, int raw) {
+        int ceiling = switch (type) {
+            case EXPERIENCE_BONUS -> MAX_EXPERIENCE_BONUS;
+            case COIN_BONUS -> MAX_COIN_BONUS;
+            case ENERGY_EFFICIENCY -> MAX_ENERGY_EFFICIENCY;
+            case MISSION_SPEED -> MAX_MISSION_SPEED;
+            case PUZZLE_BONUS -> MAX_PUZZLE_BONUS;
+        };
+        return Math.max(0, Math.min(raw, ceiling));
     }
 
     /**
@@ -158,16 +183,5 @@ public class EquipmentBonusService {
         int effective = Math.min(Math.max(percent, 0), MAX_ENERGY_EFFICIENCY);
         long discounted = ((long) baseCost * (100 - effective) + 50) / 100;
         return (int) Math.max(MINIMUM_ENERGY_COST, discounted);
-    }
-
-    private int cap(ItemEffectType type, int raw) {
-        int ceiling = switch (type) {
-            case EXPERIENCE_BONUS -> MAX_EXPERIENCE_BONUS;
-            case COIN_BONUS -> MAX_COIN_BONUS;
-            case ENERGY_EFFICIENCY -> MAX_ENERGY_EFFICIENCY;
-            case MISSION_SPEED -> MAX_MISSION_SPEED;
-            case PUZZLE_BONUS -> MAX_PUZZLE_BONUS;
-        };
-        return Math.max(0, Math.min(raw, ceiling));
     }
 }
