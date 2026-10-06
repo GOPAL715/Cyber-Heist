@@ -11,6 +11,7 @@ const NAV_LINKS = [
   { to: '/missions', label: 'Missions' },
   { to: '/shop', label: 'Shop' },
   { to: '/skills', label: 'Skills' },
+  { to: '/bosses', label: 'Bosses' },
   { to: '/inventory', label: 'Inventory' },
 ] as const
 

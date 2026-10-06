@@ -5,16 +5,19 @@ import { ProgressBar, StatCard } from '@/components/game'
 import { EnergyMeter } from '@/components/puzzle'
 import { MissionBoard } from '@/components/MissionBoard'
 import { LoadoutPanel } from '@/components/equipment'
+import { DifficultyBadge } from '@/components/bosses'
+import { availabilityLabel } from '@/components/bossConstants'
 import { useAuth } from '@/context/AuthContext'
 import { ApiError } from '@/services/apiClient'
-import { equipmentService, playerService } from '@/services'
-import type { EquipmentLoadout, PlayerProfile } from '@/types'
+import { bossService, equipmentService, playerService } from '@/services'
+import type { Boss, EquipmentLoadout, PlayerProfile } from '@/types'
 
 export function DashboardPage() {
   const { user, authorizedRequest, isInitialising } = useAuth()
 
   const [profile, setProfile] = useState<PlayerProfile | null>(null)
   const [loadout, setLoadout] = useState<EquipmentLoadout | null>(null)
+  const [nextBoss, setNextBoss] = useState<Boss | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -28,12 +31,16 @@ export function DashboardPage() {
    */
   const loadPlayer = useCallback(async () => {
     try {
-      const [profileData, loadoutData] = await Promise.all([
+      const [profileData, loadoutData, bossList] = await Promise.all([
         authorizedRequest((token) => playerService.profile(token)),
         authorizedRequest((token) => equipmentService.loadout(token)),
+        authorizedRequest((token) => bossService.list(token)),
       ])
       setProfile(profileData)
       setLoadout(loadoutData)
+      // The first boss the server says is open, which is the one worth
+      // pointing at. Locked or cooling-down bosses are not a useful nudge.
+      setNextBoss(bossList.find((boss) => boss.canStart) ?? null)
     } catch (loadError) {
       setError(
         loadError instanceof ApiError
@@ -154,6 +161,40 @@ export function DashboardPage() {
             </p>
           </Link>
         </div>
+      </section>
+
+      {/*
+        A small pointer, not the main event. Missions stay the everyday loop;
+        a boss is something the player chooses to walk into.
+      */}
+      <section className="space-y-4">
+        <h3 className="text-xs uppercase tracking-[0.3em] text-slate-500">Next boss</h3>
+        {nextBoss ? (
+          <Link to="/bosses" className="panel block p-4 transition-colors hover:border-magenta/40">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <DifficultyBadge difficulty={nextBoss.difficulty} />
+                <span className="text-sm font-bold uppercase tracking-wider text-slate-100">
+                  {nextBoss.name}
+                </span>
+              </div>
+              <span className="text-xs uppercase tracking-widest text-slate-500">
+                {availabilityLabel(nextBoss.availability)}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-slate-400">
+              {nextBoss.stageCount} stages · entry {nextBoss.energyCost} energy · requires level{' '}
+              {nextBoss.requiredLevel}
+            </p>
+          </Link>
+        ) : (
+          <Link to="/bosses" className="panel block p-4 transition-colors hover:border-magenta/40">
+            <p className="text-sm font-bold uppercase tracking-wider text-magenta">View bosses</p>
+            <p className="mt-1 text-xs text-slate-400">
+              Five targets are waiting on the network.
+            </p>
+          </Link>
+        )}
       </section>
     </div>
   )

@@ -276,7 +276,13 @@ public class MissionService {
         // Ownership and mission binding in one check. Submitting another
         // player's puzzle id, or a puzzle belonging to a different mission, is
         // reported identically: not a puzzle of yours.
-        if (!puzzle.getUserId().equals(userId) || !puzzle.getMissionId().equals(missionId)) {
+        //
+        // missionId.equals(...) rather than puzzle.getMissionId().equals(...):
+        // since Phase 6 a boss stage puzzle has no mission, so calling equals on
+        // the nullable column would throw instead of rejecting. The caller
+        // always supplies a mission id, so testing the argument is safe and says
+        // exactly the same thing.
+        if (!puzzle.getUserId().equals(userId) || !missionId.equals(puzzle.getMissionId())) {
             log.warn("Player {} tried to submit puzzle {} outside their mission {}",
                     userId, puzzleId, missionId);
             throw new PuzzleNotFoundException();

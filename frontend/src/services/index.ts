@@ -2,6 +2,10 @@ import { request } from './apiClient'
 import type {
   AuthTokens,
   AuthUser,
+  Boss,
+  BossDetail,
+  BossEncounter,
+  BossStageSubmissionPayload,
   EquipmentLoadout,
   EquipmentSlot,
   InventoryItem,
@@ -94,6 +98,59 @@ export const shopService = {
     return request<PurchaseResult>(`/api/v1/player/shop/items/${itemId}/purchase`, {
       method: 'POST',
       token,
+    })
+  },
+}
+
+/**
+ * Boss endpoints.
+ *
+ * <p>`start` sends a boss id and nothing else: the entry cost, the opening
+ * phase, the boss integrity and the difficulty are all server decisions with no
+ * field a client could fill in. `submitStage` is the same story — a puzzle id
+ * and an answer.
+ */
+export const bossService = {
+  list(token: string): Promise<Boss[]> {
+    return request<Boss[]>('/api/v1/player/bosses', { token })
+  },
+
+  detail(token: string, bossId: string): Promise<BossDetail> {
+    return request<BossDetail>(`/api/v1/player/bosses/${bossId}`, { token })
+  },
+
+  history(token: string): Promise<BossEncounter[]> {
+    return request<BossEncounter[]>('/api/v1/player/bosses/history', { token })
+  },
+
+  /** Charges the entry cost and opens an encounter. No request body. */
+  start(token: string, bossId: string): Promise<BossEncounter> {
+    return request<BossEncounter>(`/api/v1/player/bosses/${bossId}/start`, {
+      method: 'POST',
+      token,
+    })
+  },
+
+  /** The live encounter, or a 404 when there is none. */
+  current(token: string): Promise<BossEncounter> {
+    return request<BossEncounter>('/api/v1/player/boss/encounter', { token })
+  },
+
+  /**
+   * Answers the live phase's puzzle.
+   *
+   * <p>The whole attack surface of a boss fight: an id to look up and a string
+   * to compare. Damage, integrity, stage and reward are not parameters, so
+   * there is nowhere in this call for them to be forged.
+   */
+  submitStage(
+    token: string,
+    payload: BossStageSubmissionPayload,
+  ): Promise<BossEncounter> {
+    return request<BossEncounter>('/api/v1/player/boss/encounter/stage/submit', {
+      method: 'POST',
+      token,
+      body: payload,
     })
   },
 }

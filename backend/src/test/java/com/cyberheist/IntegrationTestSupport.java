@@ -3,6 +3,11 @@ package com.cyberheist;
 import com.cyberheist.mission.Mission;
 import com.cyberheist.mission.MissionProgressRepository;
 import com.cyberheist.mission.MissionRepository;
+import com.cyberheist.boss.Boss;
+import com.cyberheist.boss.BossEncounter;
+import com.cyberheist.boss.BossEncounterRepository;
+import com.cyberheist.boss.BossRepository;
+import com.cyberheist.boss.EncounterStatus;
 import com.cyberheist.player.PlayerProfile;
 import com.cyberheist.player.PlayerProfileRepository;
 import com.cyberheist.puzzle.PuzzleAttempt;
@@ -76,6 +81,12 @@ public abstract class IntegrationTestSupport {
 
     @Autowired
     protected SkillRepository skillRepository;
+
+    @Autowired
+    protected BossRepository bossRepository;
+
+    @Autowired
+    protected BossEncounterRepository bossEncounterRepository;
 
     @Autowired
     protected com.cyberheist.progression.ProgressionService progressionService;
@@ -414,6 +425,191 @@ public abstract class IntegrationTestSupport {
             }
         }
         throw new AssertionError("Skill " + code + " was not present in the tree");
+    }
+
+    // ---------------------------------------------------------------------
+    // Boss helpers
+    //
+    // Boss fights need a player level high enough to clear a gate, which no
+    // amount of test-side reflection should pretend to earn. These drive the
+    // real reward path so the level is genuinely reached.
+    // ---------------------------------------------------------------------
+
+    /** Stable id of a seeded boss, addressed by its catalogue code. */
+    protected UUID bossId(String code) {
+        return bossRepository.findByCode(code)
+                .map(Boss::getId)
+                .orElseThrow(() -> new IllegalStateException("Seeded boss not found: " + code));
+    }
+
+    /**
+     * Retires a boss, then restores it.
+     *
+     * <p>{@link Boss} exposes no mutators because in production the catalogue is
+     * written by migration alone. A test needs a retired boss to prove the board
+     * hides it, so the flag is written reflectively — the same approach Phase 4
+     * uses for retiring an item.
+     *
+     * <p>Restoring in a finally block matters: every integration test class shares
+     * one in-memory database, so a boss left retired would break later tests
+     * that happen to use it.
+     */
+    protected void withBossRetired(String code, Runnable assertions) {
+        setBossActive(code, false);
+        try {
+            assertions.run();
+        } finally {
+            setBossActive(code, true);
+        }
+    }
+
+    private void setBossActive(String code, boolean active) {
+        Boss boss = bossRepository.findByCode(code)
+                .orElseThrow(() -> new IllegalStateException("Seeded boss not found: " + code));
+        try {
+            java.lang.reflect.Field field = Boss.class.getDeclaredField("active");
+            field.setAccessible(true);
+            field.set(boss, active);
+            bossRepository.saveAndFlush(boss);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Unable to change a boss's active flag in a test", ex);
+        }
+        assertThat(bossRepository.findByCode(code).orElseThrow().isActive())
+                .as("boss %s active flag", code).isEqualTo(active);
+    }
+
+    /** Levels a player up through the real progression path. */
+    protected void levelUpTo(String email, int targetLevel) {
+        int current = profileOf(email).getLevel();
+        if (current >= targetLevel) {
+            return;
+        }
+        // A single award large enough to cross every remaining threshold, so the
+        // level and the skill points that come with it are both genuine.
+        long required = levelCurve.xpRequiredFor(targetLevel);
+        applyExperience(email, Math.max(0, required - profileOf(email).getExperience()));
+        assertThat(profileOf(email).getLevel())
+                .as("player should have reached level %d", targetLevel)
+                .isGreaterThanOrEqualTo(targetLevel);
+    }
+
+    /** Starts a boss encounter through the real endpoint. */
+    protected JsonNode startBoss(String token, UUID bossId) throws Exception {
+        MvcResult result = mockMvc.perform(
+                        authPost("/api/v1/player/bosses/" + bossId + "/start", token))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+    }
+
+    /** Starts a boss without asserting the status, so failure cases can run. */
+    protected MvcResult startBossExpectingFailure(String token, UUID bossId) throws Exception {
+        return mockMvc.perform(authPost("/api/v1/player/bosses/" + bossId + "/start", token))
+                .andReturn();
+    }
+
+    /** The caller's live boss encounter. */
+    protected JsonNode currentEncounter(String token) throws Exception {
+        return getData(token, "/api/v1/player/boss/encounter");
+    }
+
+    /**
+     * The answer the server expects for the encounter's live puzzle.
+     *
+     * <p>Re-derived from the stored seed through {@code PuzzleService}, exactly
+     * as the submission path does. The API never sends an answer, so a test that
+     * wants to win has to solve it the way a player does.
+     */
+    protected String correctBossAnswer(String token, String email) {
+        UUID userId = userIdOf(email);
+        BossEncounter encounter = bossEncounterRepository
+                .findByUserIdAndStatus(userId, EncounterStatus.ACTIVE)
+                .orElseThrow(() -> new AssertionError("no active boss encounter"));
+        PuzzleAttempt puzzle = puzzleRepository
+                .findByBossEncounterIdAndAttemptNumber(encounter.getId(), encounter.getCurrentStage())
+                .orElseThrow(() -> new AssertionError("no live puzzle for the current stage"));
+        return puzzleService.regenerate(puzzle.getPuzzleType(), puzzle.getDifficulty(), puzzle.getSeed())
+                .challenge()
+                .expectedAnswer();
+    }
+
+    /**
+     * Submits an answer to the encounter's live puzzle.
+     *
+     * @throws AssertionError if the call did not return 200
+     */
+    protected JsonNode submitBossStage(String token, String email, String answer) throws Exception {
+        UUID userId = userIdOf(email);
+        BossEncounter encounter = bossEncounterRepository
+                .findByUserIdAndStatus(userId, EncounterStatus.ACTIVE)
+                .orElseThrow(() -> new AssertionError("no active boss encounter"));
+        PuzzleAttempt puzzle = puzzleRepository
+                .findByBossEncounterIdAndAttemptNumber(encounter.getId(), encounter.getCurrentStage())
+                .orElseThrow(() -> new AssertionError("no live puzzle for the current stage"));
+
+        MvcResult result = mockMvc.perform(
+                        authPost("/api/v1/player/boss/encounter/stage/submit", token)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(objectMapper.writeValueAsString(new BossPayload(
+                                        puzzle.getPuzzleId(), answer))))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+    }
+
+    /** Plays a boss encounter to victory, answering every phase correctly. */
+    protected JsonNode defeatBoss(String token, String email, int stages) throws Exception {
+        JsonNode last = null;
+        for (int stage = 0; stage < stages; stage++) {
+            last = submitBossStage(token, email, correctBossAnswer(token, email));
+        }
+        return last;
+    }
+
+    /** Rewinds a live boss puzzle's window so the expiry path can be exercised. */
+    protected void expireBossPuzzleWindow(String email) {
+        UUID userId = userIdOf(email);
+        BossEncounter encounter = bossEncounterRepository
+                .findByUserIdAndStatus(userId, EncounterStatus.ACTIVE)
+                .orElseThrow(() -> new AssertionError("no active boss encounter"));
+        PuzzleAttempt puzzle = puzzleRepository
+                .findByBossEncounterIdAndAttemptNumber(encounter.getId(), encounter.getCurrentStage())
+                .orElseThrow(() -> new AssertionError("no live puzzle for the current stage"));
+        java.time.Instant started = java.time.Instant.now().minus(java.time.Duration.ofMinutes(30));
+        assertThat(puzzleRepository.rewindow(puzzle.getPuzzleId(), started, started.plusSeconds(60)))
+                .as("the boss puzzle should have been re-windowed")
+                .isEqualTo(1);
+    }
+
+    /**
+     * Moves an encounter's whole window into the past so it lapses.
+     *
+     * <p>Both timestamps are rewound together: the table requires
+     * {@code expires_at > started_at}, which is a real invariant and a useful one.
+     * Pushing only the expiry into the past would produce a window that never
+     * existed.
+     */
+    protected void expireEncounterWindow(String email) {
+        UUID userId = userIdOf(email);
+        BossEncounter encounter = bossEncounterRepository
+                .findByUserIdAndStatus(userId, EncounterStatus.ACTIVE)
+                .orElseThrow(() -> new AssertionError("no active boss encounter"));
+        try {
+            java.time.Instant started = java.time.Instant.now().minus(java.time.Duration.ofHours(2));
+            java.lang.reflect.Field startedField = BossEncounter.class.getDeclaredField("startedAt");
+            startedField.setAccessible(true);
+            startedField.set(encounter, started);
+            java.lang.reflect.Field expiresField = BossEncounter.class.getDeclaredField("expiresAt");
+            expiresField.setAccessible(true);
+            expiresField.set(encounter, started.plusSeconds(60));
+            bossEncounterRepository.saveAndFlush(encounter);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Unable to expire an encounter in a test", ex);
+        }
+    }
+
+    /** Request body for {@code /player/boss/encounter/stage/submit}. */
+    public record BossPayload(java.util.UUID puzzleId, String answer) {
     }
 
     /** Request body for {@code /auth/register}. */

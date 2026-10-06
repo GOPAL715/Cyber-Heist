@@ -13,7 +13,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * One generated puzzle, owned by one player, belonging to one mission.
+ * One generated puzzle, owned by one player, belonging to one mission
+ * <em>or</em> one boss encounter.
  *
  * <p>The row stores everything needed to <em>validate</em> a submission - type,
  * difficulty and the {@code seed} the challenge was generated from - and
@@ -26,8 +27,20 @@ import java.util.UUID;
  * once. Those two facts are what make duplicate submission and duplicate
  * rewards impossible.
  *
- * <p>This entity is mutated only by {@code PuzzleService} and
- * {@code MissionService}; puzzle providers never see it.
+ * <h2>Ownership (Phase 6)</h2>
+ * Phase 3 assumed every puzzle belonged to a mission. Boss encounters broke that
+ * assumption, so the row now names exactly one owner: {@code missionId} for a
+ * mission puzzle, {@code bossEncounterId} for a boss stage. The database enforces
+ * that exactly one is set, which is what stops a boss puzzle being submitted to
+ * a mission endpoint — or the reverse — even if some future code forgets to
+ * check.
+ *
+ * <p>{@code attemptNumber} means the mission attempt number, or the boss stage
+ * number, depending on the owner.
+ *
+ * <p>This entity is mutated only by {@code PuzzleService},
+ * {@code MissionService} and {@code BossEncounterService}; puzzle providers never
+ * see it.
  */
 @Entity
 @Table(name = "puzzle_attempts")
@@ -40,8 +53,13 @@ public class PuzzleAttempt extends AuditableEntity {
     @Column(name = "user_id", nullable = false)
     private UUID userId;
 
-    @Column(name = "mission_id", nullable = false)
+    /** Null for a boss stage attempt. Exactly one owner column is set. */
+    @Column(name = "mission_id")
     private UUID missionId;
+
+    /** Null for a mission attempt. Exactly one owner column is set. */
+    @Column(name = "boss_encounter_id")
+    private UUID bossEncounterId;
 
     /** Public instance identifier handed to the client. Unique across the table. */
     @Column(name = "puzzle_id", nullable = false, unique = true)
@@ -93,9 +111,46 @@ public class PuzzleAttempt extends AuditableEntity {
                          Instant startedAt,
                          Instant expiresAt,
                          int attemptNumber) {
+        this(id, userId, missionId, null, puzzleId, puzzleType, difficulty, seed,
+                startedAt, expiresAt, attemptNumber);
+    }
+
+    /** A puzzle generated for one phase of a boss encounter. */
+    public static PuzzleAttempt forBossStage(UUID id,
+                                             UUID userId,
+                                             UUID bossEncounterId,
+                                             UUID puzzleId,
+                                             PuzzleType puzzleType,
+                                             MissionDifficulty difficulty,
+                                             long seed,
+                                             Instant startedAt,
+                                             Instant expiresAt,
+                                             int stageNumber) {
+        return new PuzzleAttempt(id, userId, null, bossEncounterId, puzzleId, puzzleType,
+                difficulty, seed, startedAt, expiresAt, stageNumber);
+    }
+
+    private PuzzleAttempt(UUID id,
+                          UUID userId,
+                          UUID missionId,
+                          UUID bossEncounterId,
+                          UUID puzzleId,
+                          PuzzleType puzzleType,
+                          MissionDifficulty difficulty,
+                          long seed,
+                          Instant startedAt,
+                          Instant expiresAt,
+                          int attemptNumber) {
+        if ((missionId == null) == (bossEncounterId == null)) {
+            // Mirrors the table's CHECK constraint, so a programming mistake
+            // fails here rather than at flush time with an opaque message.
+            throw new IllegalArgumentException(
+                    "A puzzle attempt belongs to exactly one mission or boss encounter");
+        }
         this.id = id;
         this.userId = userId;
         this.missionId = missionId;
+        this.bossEncounterId = bossEncounterId;
         this.puzzleId = puzzleId;
         this.puzzleType = puzzleType;
         this.difficulty = difficulty;
@@ -104,6 +159,11 @@ public class PuzzleAttempt extends AuditableEntity {
         this.startedAt = startedAt;
         this.expiresAt = expiresAt;
         this.attemptNumber = attemptNumber;
+    }
+
+    /** True when this puzzle belongs to a boss stage rather than a mission. */
+    public boolean isBossPuzzle() {
+        return bossEncounterId != null;
     }
 
     /**
@@ -147,6 +207,11 @@ public class PuzzleAttempt extends AuditableEntity {
 
     public UUID getMissionId() {
         return missionId;
+    }
+
+    /** Null for a mission puzzle. */
+    public UUID getBossEncounterId() {
+        return bossEncounterId;
     }
 
     public UUID getPuzzleId() {

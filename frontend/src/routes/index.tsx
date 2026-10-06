@@ -1,6 +1,8 @@
 import { Route, Routes } from 'react-router-dom'
 import { AuthLayout } from '@/layouts/AuthLayout'
 import { DashboardLayout } from '@/layouts/DashboardLayout'
+import { BossBoardPage } from '@/pages/BossBoardPage'
+import { BossEncounterPage } from '@/pages/BossEncounterPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { InventoryPage } from '@/pages/InventoryPage'
 import { LoginPage } from '@/pages/LoginPage'
@@ -37,6 +39,9 @@ export function AppRoutes() {
           <Route path="/missions" element={<MissionsPage />} />
           <Route path="/shop" element={<ShopPage />} />
           <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/bosses" element={<BossBoardPage />} />
+          {/* No conflict with /bosses: ranking is by specificity, not order. */}
+          <Route path="/bosses/encounter" element={<BossEncounterPage />} />
           <Route path="/inventory" element={<InventoryPage />} />
           <Route path="/profile" element={<ProfilePage />} />
         </Route>

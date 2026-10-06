@@ -3,7 +3,12 @@ import { screen, waitFor, within } from '@testing-library/react'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { saveSession } from '@/services/sessionStorage'
 import { jsonResponse, renderWithProviders, tokens } from './helpers'
-import type { EquipmentLoadout, Mission, PlayerProfile } from '@/types'
+import type {
+  BossAvailability,
+  EquipmentLoadout,
+  Mission,
+  PlayerProfile,
+} from '@/types'
 import { mission } from './missionFixtures'
 
 /**
@@ -68,15 +73,48 @@ const loadout: EquipmentLoadout = {
 }
 
 /**
- * Mocks the calls the dashboard makes in order: session restore, then the
- * profile and loadout pair, then the mission board list.
+ * A boss the player could enter, as the boss list returns it.
  *
- * <p>The loadout is now part of the dashboard because it reports the bonuses
- * actually applied to rewards, so the profile and loadout are fetched together.
+ * <p>Only the fields the dashboard's "next boss" panel reads.
+ */
+const openBoss: {
+  id: string
+  code: string
+  name: string
+  description: string
+  difficulty: 'MEDIUM'
+  requiredLevel: number
+  energyCost: number
+  stageCount: number
+  xpReward: number
+  coinReward: number
+  availability: BossAvailability
+  canStart: boolean
+  stages: []
+} = {
+  id: '41111111-0000-4000-8000-000000000001',
+  code: 'THE_FIREWALL',
+  name: 'The Firewall',
+  description: 'A mind that has learned to say no.',
+  difficulty: 'MEDIUM',
+  requiredLevel: 6,
+  energyCost: 30,
+  stageCount: 3,
+  xpReward: 350,
+  coinReward: 220,
+  availability: 'AVAILABLE',
+  canStart: true,
+  stages: [],
+}
+
+/**
+ * Mocks the calls the dashboard makes in order: session restore, then the
+ * profile, loadout and boss list fetched together, then the mission board list.
  */
 function mockDashboardRequests(overrides: {
   profile?: PlayerProfile
   loadout?: EquipmentLoadout
+  bosses?: typeof openBoss[]
   missions?: Mission[]
 } = {}) {
   return vi
@@ -87,6 +125,9 @@ function mockDashboardRequests(overrides: {
     )
     .mockResolvedValueOnce(
       jsonResponse({ success: true, data: overrides.loadout ?? loadout }),
+    )
+    .mockResolvedValueOnce(
+      jsonResponse({ success: true, data: overrides.bosses ?? [openBoss] }),
     )
     .mockResolvedValueOnce(
       jsonResponse({
@@ -201,6 +242,8 @@ describe('DashboardPage', () => {
       .mockResolvedValueOnce(jsonResponse({ success: true, data: profile }))
       // Loadout, fetched alongside the profile.
       .mockResolvedValueOnce(jsonResponse({ success: true, data: loadout }))
+      // Boss list, for the dashboard's next-boss pointer.
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: [openBoss] }))
       // Mission board list.
       .mockResolvedValueOnce(jsonResponse({ success: true, data: [availableMission] }))
 
@@ -216,6 +259,7 @@ describe('DashboardPage', () => {
         expect.stringContaining('/api/v1/auth/refresh'),
         expect.stringContaining('/api/v1/player/profile'),
         expect.stringContaining('/api/v1/player/equipment'),
+        expect.stringContaining('/api/v1/player/bosses'),
         expect.stringContaining('/api/v1/player/missions'),
       ]),
     )
@@ -252,8 +296,6 @@ describe('DashboardPage', () => {
       'href',
       '/inventory',
     )
-    // The Phase 4 placeholder is gone now the systems exist.
-    expect(screen.queryByText(/upgrades & skill tree/i)).not.toBeInTheDocument()
   })
 
   it('omits empty slots from the compact dashboard loadout', async () => {
@@ -265,5 +307,33 @@ describe('DashboardPage', () => {
     expect(await screen.findByText(/player loadout/i)).toBeInTheDocument()
     expect(screen.getByText('Basic Laptop')).toBeInTheDocument()
     expect(screen.queryByText('Empty')).not.toBeInTheDocument()
+  })
+
+  it('points at the next boss the server says is open', async () => {
+    signIn()
+    mockDashboardRequests()
+
+    renderWithProviders(<DashboardPage />)
+
+    expect(await screen.findByText(/next boss/i)).toBeInTheDocument()
+    const panel = screen.getByRole('link', { name: /the firewall/i })
+    expect(panel).toHaveAttribute('href', '/bosses')
+    expect(panel).toHaveTextContent('3 stages')
+    expect(panel).toHaveTextContent('entry 30 energy')
+    expect(panel).toHaveTextContent('requires level 6')
+  })
+
+  it('does not push a boss the player cannot enter', async () => {
+    signIn()
+    // Nothing the player has reached yet, so there is nothing worth nudging.
+    mockDashboardRequests({
+      bosses: [{ ...openBoss, availability: 'LOCKED', canStart: false }],
+    })
+
+    renderWithProviders(<DashboardPage />)
+
+    expect(await screen.findByText(/next boss/i)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /view bosses/i })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /the firewall/i })).not.toBeInTheDocument()
   })
 })

@@ -51,4 +51,27 @@ public interface PuzzleAttemptRepository extends JpaRepository<PuzzleAttempt, UU
     int rewindow(@Param("puzzleId") UUID puzzleId,
                  @Param("startedAt") Instant startedAt,
                  @Param("expiresAt") Instant expiresAt);
+
+    /**
+     * The live puzzle for a phase of a boss encounter.
+     *
+     * <p>Keyed on (encounter, stage) rather than on the attempt number alone, so
+     * a boss puzzle can never be mistaken for a mission attempt.
+     */
+    Optional<PuzzleAttempt> findByBossEncounterIdAndAttemptNumber(UUID bossEncounterId, int stageNumber);
+
+    /** Every puzzle generated for one encounter, in stage order. */
+    List<PuzzleAttempt> findByBossEncounterIdOrderByAttemptNumberAsc(UUID bossEncounterId);
+
+    /**
+     * Expires any still-open boss puzzle for an encounter.
+     *
+     * <p>Called when an encounter ends without the current phase being answered,
+     * so a puzzle can never outlive the fight that issued it.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update PuzzleAttempt a set a.status = 'EXPIRED', a.submittedAt = :now "
+            + "where a.bossEncounterId = :encounterId and a.status = 'ACTIVE'")
+    int expireOpenBossPuzzles(@Param("encounterId") UUID encounterId, @Param("now") Instant now);
 }

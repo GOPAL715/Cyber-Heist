@@ -6,7 +6,8 @@ A cyberpunk-themed browser game.
 - **Phase 2** — player progression (XP, levels, coins, energy) and the mission system.
 - **Phase 3** — the puzzle engine and passive energy regeneration.
 - **Phase 4** — the item catalogue, shop, inventory and equipment.
-- **Phase 5 (current)** — the skill tree and player abilities.
+- **Phase 5** — the skill tree and player abilities.
+- **Phase 6 (current)** — the boss catalogue and multi-stage encounters.
 
 Implemented gameplay loop:
 
@@ -14,10 +15,15 @@ Implemented gameplay loop:
 > server validates → rewards → update XP/coins/energy → level up →
 > **earn a skill point** → unlock a skill → **rewards improve**
 
-Skill trees, bosses, achievements, leaderboards, multiplayer, PvP,
-AI-generated content and payments are **out of scope** and are not implemented.
-The schema and code are laid out so those systems can be added later without a
-redesign.
+And, once a player passes a boss's level gate:
+
+> Pick a boss → pay its energy once → **three phases, each a puzzle** →
+> server reads the phase's damage and moves the boss's integrity →
+> win and be paid, or lose everything and cool down
+
+Achievements, leaderboards, multiplayer, PvP, AI-generated content and payments are
+**out of scope** and are not implemented. The schema and code are laid out so those
+systems can be added later without a redesign.
 
 ---
 
@@ -471,6 +477,110 @@ profile. Every rejection happens before the first write.
 
 ---
 
+## Boss encounters
+
+Phase 6 adds a boss catalogue: five bosses, each a fixed three-phase fight. Unlike a
+mission, a boss is not one puzzle. It is three, in order, against an integrity bar
+that only the server moves.
+
+### The catalogue is data
+
+`bosses` and `boss_stages` hold every number that defines a fight: the level gate,
+the energy cost, the stage count, the XP and coin rewards, and each stage's puzzle
+family, difficulty, time limit and damage value. There is no boss logic in Java and
+nothing hard-coded per boss.
+
+| code | level | energy | stages | xp | coins |
+|---|---|---|---|---|---|
+| `THE_FIREWALL` | 6 | 30 | 3 | 350 | 220 |
+| `ZERO_DAY` | 6 | 30 | 3 | 250 | 150 |
+| `THE_PHANTOM` | 10 | 40 | 3 | 650 | 400 |
+| `BLACK_ICE` | 20 | 50 | 3 | 1200 | 750 |
+| `THE_ARCHITECT` | 26 | 50 | 3 | 1100 | 700 |
+
+Stage puzzles are handed to `PuzzleService` exactly as mission puzzles are, by
+`puzzle_type` and `difficulty`. **No boss has a puzzle provider of its own** — a
+`CIPHER` phase is the same engine a `CRYPTOGRAPHY` mission uses, at the boss's
+difficulty. The phase's damage is the number the `boss_stages` row carries, read at
+the moment of a correct answer and never sent by the client.
+
+### The trust rule
+
+A boss fight is the most expensive thing in the game, so the client is trusted with
+the least. The submission body is two fields:
+
+```json
+{ "puzzleId": "…", "answer": "…" }
+```
+
+No damage value, no integrity total, no stage number, no reward. Given that pair
+the server regenerates the puzzle from its stored seed, decides whether it was
+right, reads the stage's damage from the database, applies it, and returns the
+whole new encounter state. The client renders what it is told. There is no code
+path that advances an encounter from a client-supplied number.
+
+### Fight lifecycle
+
+```
+POST /bosses/{id}/start
+  1  player at or above required_level      → 400
+  2  no other ACTIVE encounter               → 400
+  3  not inside a cooldown window            → 400
+  4  energy covers energy_cost               → 400
+  5  charge energy, create encounter at stage 1, issue the phase puzzle
+     (one transaction, profile locked)
+```
+
+```
+POST /boss/encounter/stage/submit
+  1  there is an ACTIVE encounter             → 404
+  2  the puzzle belongs to this encounter    → 400
+  3  the puzzle is unanswered                → 400
+  4  the puzzle has not expired               → DEFEATED
+  5  the answer is wrong                     → DEFEATED
+  6  correct: subtract the stage's damage,
+     advance, issue the next phase puzzle,
+     or on the last phase award and set VICTORY
+```
+
+Statuses are `ACTIVE`, `VICTORY`, `DEFEATED` and `EXPIRED`. **One wrong answer or
+one missed window loses the whole fight** — there is no retry, no partial credit and
+no refund of the entry energy. A defeat pays nothing and applies the defeat
+cooldown (30 minutes by default); a victory pays the catalogue rewards and applies
+the much longer victory cooldown (720 minutes). Both are computed from server time,
+and both live in `bosses` so they can be tuned without a code change.
+
+An abandoned encounter becomes `EXPIRED` lazily: the next read or submission finds
+the deadline passed, closes the encounter, applies the cooldown and reports it.
+Nothing runs on a timer.
+
+### Concurrency
+
+Two players may fight different bosses at once; one player may not fight two bosses
+at once. The profile lock is taken first, as everywhere else in the application, so
+two simultaneous starts serialise on the same row. The database backs that up:
+
+```sql
+UNIQUE (user_id, active_marker)   -- active_marker = 1 while ACTIVE, else NULL
+```
+
+A second concurrent start fails on the unique constraint rather than on a race in
+Java. Rewards are granted inside the same locked transaction that flips the
+encounter to `VICTORY`, so a replayed final submission finds the encounter already
+settled and pays nothing a second time — `BossConcurrencyIntegrationTest` fires
+those races and asserts the balance moves exactly once. A second `CHECK` makes the
+payout unrepresentable unless the row says `VICTORY`.
+
+### Puzzle ownership
+
+Boss phases reuse `puzzle_attempts` rather than adding a second attempt table. That
+required exactly one schema change: `mission_id` became nullable and
+`boss_encounter_id` was added, with a `CHECK` requiring precisely one of the two to
+be set. A puzzle attempt belongs to a mission or to a boss phase and to nothing
+else, which the database enforces. `MissionService` was made null-safe as a result.
+
+---
+
 ## Inventory, equipment and the shop
 
 Phase 4 gives coins a purpose: the shop sells a server-owned catalogue of items,
@@ -795,7 +905,7 @@ Open <http://localhost:5173>. The browser calls the API directly at
 ## Running the tests
 
 ```bash
-# Backend — 376 tests
+# Backend — 422 tests
 cd backend
 mvn test
 
@@ -838,6 +948,15 @@ The Phase 5 suites cover:
 | `SkillPointProgressionIntegrationTest` | One point per level, **one per level crossed** on a multi-level jump, large jumps, nothing without a level-up, accumulation, immediate spendability |
 | `PlayerBonusIntegrationTest` | Combined capping in isolation, ceilings unchanged per type, equipment+skill stacking, a maxed skill tree still capped at 50%, skill energy discount reaching a mission, caller-scoped bonuses |
 
+The Phase 6 suites cover:
+
+| Suite | Covers |
+| --- | --- |
+| `BossCatalogueIntegrationTest` | Five seeded bosses in order, server-defined costs/rewards/stage counts, per-stage damage, availability derived from the real profile, level gate reasons, detail and cooldown minutes |
+| `BossEncounterIntegrationTest` | Start charges energy once, stage-by-stage integrity from `boss_stages`, phase advance, victory rewards through `RewardService` and skill points from levels gained, one wrong answer defeats with no reward and no refund, expiry, cooldowns |
+| `BossSecurityIntegrationTest` | Encounter and history isolation between players, another player's puzzle id refused, forged damage/integrity/stage/reward fields ignored, unknown and malformed ids |
+| `BossConcurrencyIntegrationTest` | Two simultaneous starts admit one encounter, a replayed final submission pays nothing twice, the balance moves exactly once |
+
 ### Live HTTP verification
 
 Two scripts start the real application and exercise the API over HTTP with real
@@ -849,6 +968,7 @@ mvn clean package
 mvn dependency:build-classpath -Dmdep.outputFile=target/cp.txt
 powershell -File verify-live.ps1         # Phase 4: shop, inventory, equipment (28 checks)
 powershell -File verify-live-skills.ps1  # Phase 5: skill tree (20 checks)
+powershell -File verify-live-bosses.ps1  # Phase 6: boss catalogue and gating (22 checks)
 ```
 
 The Phase 5 script covers registration, a zero starting balance, the tree and its
@@ -859,7 +979,26 @@ skill bonuses combining to the capped effective total, a forged cost/level/
 effect/balance being ignored, `PUT` returning `405`, per-player isolation,
 authentication and unknown ids.
 
-Because no PostgreSQL credentials are available, both scripts point the
+The Phase 6 script covers the catalogue and its server-defined figures, the stage
+list with its per-stage damage values, every boss reporting `LOCKED` for a fresh
+player, the level gate refusing a start with `Requires level 6`, a refused start
+leaving no encounter and no history row, **the level gate tracking real
+progress** (it plays ten solvable missions to reach level 5 for real, then
+confirms the gate still holds and a higher boss names its own `Requires level
+10`), the detail endpoint's cooldown minutes, a submission with no encounter
+returning `404`, per-player isolation in both directions and authentication.
+
+The Phase 6 script deliberately stops at the level gate, and says so in its own
+output. Its puzzle solvers derive answers for `SEQUENCE`, `PATTERN`, `LOGIC` and
+`TIMED` by reading each prompt and applying the rule the prompt names, but
+`CIPHER` plaintexts are generated from the alphabet rather than a word list, so
+there is nothing to reason from. Since every mission XP needed to cross level 6
+sits behind `CRYPTOGRAPHY` missions, the encounter lifecycle itself — the single
+energy charge, a real defeat, the defeat cooldown, the history row and the
+victory award path — is covered by `BossEncounterIntegrationTest` against the
+real service with a level-6 fixture instead of being faked here.
+
+Because no PostgreSQL credentials are available, all three scripts point the
 application at an H2 in-memory database in PostgreSQL mode. **This verifies the
 API and the business rules, not PostgreSQL.**
 
@@ -1157,6 +1296,80 @@ rejected at startup by `SkillTreeService`.
 **`UNIQUE (user_id, skill_id)`**. No row means level 0, so the table holds only
 what was actually learned and a skill added later needs no backfill.
 
+### `bosses`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key |
+| `code` | `VARCHAR(64)` | **UNIQUE** — `THE_FIREWALL` |
+| `name` | `VARCHAR(120)` | |
+| `description` | `VARCHAR(500)` | |
+| `difficulty` | `VARCHAR(16)` | `EASY`–`ELITE` |
+| `required_level` | `INTEGER` | `> 0` — the level gate |
+| `energy_cost` | `INTEGER` | Charged once, at start |
+| `stage_count` | `INTEGER` | `> 0` |
+| `xp_reward` | `BIGINT` | Victory only |
+| `coin_reward` | `BIGINT` | Victory only |
+| `cooldown_victory_minutes` | `INTEGER` | After a win |
+| `cooldown_defeat_minutes` | `INTEGER` | After a loss |
+| `active` | `BOOLEAN` | Retiring a boss hides it without deleting history |
+
+### `boss_stages`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key |
+| `boss_id` | `UUID` | FK → `bosses` (cascade) |
+| `stage_number` | `INTEGER` | `> 0` |
+| `name`, `description` | `VARCHAR(120)`, `VARCHAR(500)` | |
+| `puzzle_type` | `VARCHAR(16)` | One of the five engine families |
+| `difficulty` | `VARCHAR(16)` | Handed to `PuzzleService` |
+| `time_limit_seconds` | `INTEGER` | `> 0` and `<= 3600` |
+| `damage_value` | `INTEGER` | `> 0` — integrity removed on a correct answer |
+
+**`UNIQUE (boss_id, stage_number)`**. There is deliberately no upper bound tying
+`stage_number` to three: `bosses.stage_count` already carries the length, so a
+fourth phase needs no migration and no constraint change.
+
+### `boss_encounters`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key |
+| `user_id` | `UUID` | FK → `users` (cascade) |
+| `boss_id` | `UUID` | FK → `bosses` |
+| `status` | `VARCHAR(16)` | `ACTIVE`/`VICTORY`/`DEFEATED`/`EXPIRED` |
+| `current_stage` | `INTEGER` | `> 0` |
+| `boss_integrity` | `INTEGER` | `0`–`100` |
+| `reached_stage` | `INTEGER` | Highest stage answered |
+| `xp_awarded`, `coin_awarded` | `BIGINT` | What was actually paid |
+| `started_at` | `TIMESTAMPTZ` | |
+| `completed_at`, `failed_at` | `TIMESTAMPTZ` | `NULL` until the fight ends |
+| `expires_at` | `TIMESTAMPTZ` | `CHECK (expires_at > started_at)` |
+| `cooldown_until` | `TIMESTAMPTZ` | `NULL` until the fight ends |
+| `active_marker` | `INTEGER` | `1` while `ACTIVE`, `NULL` once ended |
+
+**`UNIQUE (user_id, active_marker)`** — one live fight per player, enforced by the
+database. `NULL`s never collide in a unique index, so a player can hold any number
+of finished encounters but only one live one. A partial unique index
+(`WHERE status = 'ACTIVE'`) would say this more directly, but it is not portable to
+the H2 build the suite runs against; the application enforces the same rule by
+locking the profile row first.
+
+Two `CHECK`s carry the economic guarantees:
+
+```sql
+-- Zero rewards unless the encounter was actually won.
+CONSTRAINT ck_boss_encounters_rewards CHECK (
+    (status = 'VICTORY' AND xp_awarded > 0 AND coin_awarded > 0)
+ OR (status <> 'VICTORY' AND xp_awarded = 0 AND coin_awarded = 0)
+)
+```
+
+So a lost, expired or abandoned fight cannot hold a payout, and even a bug that
+re-entered the victory branch would find the row already marked and the rewards
+already spent.
+
 ---
 
 ## API overview
@@ -1189,6 +1402,12 @@ All endpoints are under `/api/v1`. Success bodies use
 | `DELETE` | `/player/equipment/{slot}` | bearer | `200` | Empty a slot; the item stays owned |
 | `GET` | `/player/skills` | bearer | `200` | The skill tree: balance, every skill, levels, prerequisites, bonuses |
 | `POST` | `/player/skills/{skillId}/unlock` | bearer | `200` | Take the next level. **No request body** |
+| `GET` | `/player/bosses` | bearer | `200` | Boss catalogue with the caller's availability per boss |
+| `GET` | `/player/bosses/history` | bearer | `200` | The caller's past encounters, newest first |
+| `GET` | `/player/bosses/{bossId}` | bearer | `200` | One boss's detail and its cooldown minutes |
+| `POST` | `/player/bosses/{bossId}/start` | bearer | `200` | Charge energy, open an encounter, **return phase 1**. **No request body** |
+| `GET` | `/player/boss/encounter` | bearer | `200` | The caller's live encounter, or `404` |
+| `POST` | `/player/boss/encounter/stage/submit` | bearer | `200` | Submit a phase answer, **return the whole new encounter state** |
 
 Energy is exposed on `/player/profile` rather than through a separate endpoint,
 so the client needs one request to draw the meter and decide whether a mission
@@ -1522,6 +1741,46 @@ That is the entire body. It cannot express a rarity, a bonus, a price or an
 ownership claim. An unknown slot name is rejected as a bad path variable before
 any service runs.
 
+### `POST /api/v1/player/bosses/{bossId}/start`
+
+Request body: **none**. Energy, the stage and the first puzzle are all decided by
+the server.
+
+### `POST /api/v1/player/boss/encounter/stage/submit`
+
+```json
+{ "puzzleId": "…", "answer": "…" }
+```
+
+Two fields, and the response is the authoritative new state:
+
+```json
+{
+  "success": true,
+  "data": {
+    "encounterId": "…",
+    "bossCode": "THE_FIREWALL",
+    "bossName": "The Firewall",
+    "status": "ACTIVE",
+    "currentStage": 2,
+    "stageCount": 3,
+    "bossIntegrity": 80,
+    "bossIntegrityPercent": 80,
+    "reachedStage": 1,
+    "stageName": "Break the Cipher",
+    "outcomeMessage": "STAGE 1 CLEARED. Integrity 80. NEXT PHASE.",
+    "xpAwarded": 0,
+    "coinAwarded": 0,
+    "puzzle": { "puzzleId": "…", "type": "CIPHER", "sequence": ["…"] }
+  }
+}
+```
+
+A wrong answer returns `200` with `status: "DEFEATED"`, `xpAwarded: 0` and the
+defeat cooldown — a loss is a successful request that reports a lost fight, not an
+error. Only `404` (no encounter, or it is not yours) and `400` (malformed body,
+unanswered puzzle, unknown puzzle) are errors.
+
 ---
 
 ## Security model
@@ -1589,11 +1848,14 @@ MISSION BOARD  ──start──▶  PUZZLE SCREEN  ──submit──▶  RESUL
 | `components/equipmentConstants.ts` | Slot labels, effect labels, rarity colours. **No prices or bonuses** |
 | `components/skills.tsx` | `SkillCard`, `SkillBranchColumn` |
 | `components/skillConstants.ts` | Branch headings, effect colours, level wording. **No costs or percentages** |
+| `components/bosses.tsx` | `BossCard`, `BossIntegrityBar`, `BossOutcomePanel`. **No damage or integrity arithmetic** |
+| `components/bossConstants.ts` | Difficulty labels, availability wording. **No costs or damage values** |
 
-Routes are `/dashboard`, `/missions`, `/shop`, `/skills`, `/inventory` and
-`/profile`, all inside the authenticated layout. Missions remain the primary
-action on the dashboard; the shop, inventory and skill tree are reachable from
-the navigation and from the dashboard's progression panel.
+Routes are `/dashboard`, `/missions`, `/shop`, `/skills`, `/bosses`,
+`/bosses/encounter`, `/inventory` and `/profile`, all inside the authenticated
+layout. Missions remain the primary action on the dashboard; the shop, inventory,
+skill tree and boss board are reachable from the navigation, and the dashboard's
+"next boss" panel points at whichever boss the server says is open.
 
 The frontend holds **no price table, no rarity list, no point cost and no bonus
 arithmetic**. Rarity colours, branch headings and slot labels are the only things
@@ -1640,22 +1902,25 @@ cyber-heist/
 │   │   ├── application.yml
 │   │   └── db/migration/  V1 core · V2 mission system · V3 seed · V4 puzzles + regen
 │   │                      · V5 inventory + equipment + shop · V6 skill tree
-│   ├── src/test/          376 tests
-│   ├── verify-live.ps1         Phase 4 live HTTP verification
+│   │                      · V7 boss encounters
+│   ├── src/test/          422 tests
+│   ├── verify-live-bosses.ps1   Phase 6 live HTTP verification
 │   ├── verify-live-skills.ps1  Phase 5 live HTTP verification
+│   ├── verify-live.ps1         Phase 4 live HTTP verification
 │   ├── Dockerfile
 │   └── pom.xml
 ├── frontend/
 │   ├── src/
-│   │   ├── components/    UI primitives, MissionBoard, puzzle.tsx, equipment.tsx, skills.tsx
-│   │   ├── pages/         Login, Register, Dashboard, Missions, Shop, Skills, Inventory, Profile, 404
+│   │   ├── components/    UI primitives, MissionBoard, puzzle.tsx, equipment.tsx, skills.tsx, bosses.tsx
+│   │   ├── pages/         Login, Register, Dashboard, Missions, Shop, Skills, Inventory,
+│   │   │                  BossBoard, BossEncounter, Profile, 404
 │   │   ├── layouts/       Auth and dashboard shells (incl. main navigation)
-│   │   ├── services/      apiClient, auth/user/player/mission/shop/skill/equipment services
+│   │   ├── services/      apiClient, auth/user/player/mission/shop/skill/equipment/boss services
 │   │   ├── context/       AuthContext (incl. transparent token refresh)
 │   │   ├── routes/        Route table and auth guards
 │   │   ├── types/         Shared TypeScript types
 │   │   ├── utils/         Client-side validation
-│   │   └── test/          Vitest suites — 113 tests
+│   │   └── test/          Vitest suites — 135 tests
 │   └── package.json
 ├── docker-compose.yml
 ├── .env.example
@@ -1749,6 +2014,22 @@ source gets equipment bonuses without any change of its own.
 - The catalogue is seeded by migration and has no admin surface. Retiring an item
   means a migration or a direct database edit; `items.active` exists and is
   honoured everywhere, but nothing writes it at runtime.
+- **The encounter lifecycle is not covered by the live HTTP script.** It plays
+  missions for real and reaches level 5, but level 6 — the lowest boss gate — needs
+  about 1,319 XP while the whole solvable mission catalogue yields about 1,170, and
+  the remainder sits behind `CIPHER` missions whose plaintexts are random letters
+  rather than words and so cannot be solved from the prompt. The energy charge, a
+  real defeat, the defeat cooldown, the history row and the victory award path are
+  covered by the integration suites against the real service instead. Nothing was
+  written directly to the database to get past the gate.
+- Boss fights are all-or-nothing and every boss has three phases, so the first
+  encounter a player reaches is three puzzles from cold. There is no way to abandon
+  and restart, and a defeat costs 30–50 energy plus a cooldown, which is a
+  punishing first impression that has not been playtested.
+- Expired encounters are closed lazily on the next read or submission rather than
+  by a scheduler, so a `COOLDOWN` shown on the board is computed from
+  `cooldown_until`, but an abandoned encounter's final row is not written until the
+  player returns.
 - Items cannot be traded or bound to an account permanently, and there is no
   cooldown on re-equipping, which makes loadout swapping free.
 - The economy has been sanity-checked against mission rewards but not playtested

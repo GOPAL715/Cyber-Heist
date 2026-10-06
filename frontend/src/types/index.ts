@@ -482,3 +482,123 @@ export interface SkillUnlockResult {
   /** The player's effective bonuses after the change, already capped. */
   bonuses: ActiveBonus[]
 }
+
+// ---------------------------------------------------------------------------
+// Bosses (Phase 6)
+//
+// A boss fight is orchestrated server-side, so nothing here describes a boss
+// the way the client would like it to be. The board renders `canStart` and
+// `availability` verbatim; the encounter screen submits a puzzle id and an answer
+// and nothing else.
+// ---------------------------------------------------------------------------
+
+/** Mirror of the backend `MissionDifficulty`, which bosses share. */
+export type BossDifficulty = 'EASY' | 'MEDIUM' | 'HARD' | 'ELITE'
+
+/** Mirror of the backend `EncounterStatus`. */
+export type EncounterStatus = 'ACTIVE' | 'VICTORY' | 'DEFEATED' | 'EXPIRED'
+
+/** What the caller may currently do with a boss. Server-decided. */
+export type BossAvailability = 'AVAILABLE' | 'LOCKED' | 'COOLDOWN' | 'ACTIVE'
+
+/** One phase of a boss. */
+export interface BossStage {
+  stageNumber: number
+  name: string
+  description: string
+  puzzleType: PuzzleType
+  /** Server-applied on success. There is no way to send a different value. */
+  damageValue: number
+}
+
+/**
+ * One boss on the board.
+ *
+ * `canStart` and `blockedReason` are the server's verdict, used directly for
+ * the button, so the screen can never offer a fight the backend would refuse.
+ */
+export interface Boss {
+  id: string
+  code: string
+  name: string
+  description: string
+  difficulty: BossDifficulty
+  requiredLevel: number
+  /** Base entry cost; efficiency may reduce the amount actually charged. */
+  energyCost: number
+  stageCount: number
+  xpReward: number
+  coinReward: number
+  availability: BossAvailability
+  canStart: boolean
+  blockedReason?: string
+  cooldownUntil?: string
+  /** The live encounter, when one is running. */
+  activeEncounterId?: string
+  stages: BossStage[]
+}
+
+export interface BossDetail extends Omit<Boss, 'activeEncounterId'> {
+  cooldownVictoryMinutes: number
+  cooldownDefeatMinutes: number
+  timesDefeated?: number
+}
+
+/** What a victory paid, echoed from the server's own arithmetic. */
+export interface BossRewards {
+  experience: number
+  coins: number
+}
+
+/**
+ * The level change a reward caused.
+ *
+ * `skillPointsGained` is reported rather than derived, because the points are
+ * awarded inside the same progression step as the level change.
+ */
+export interface BossProgression {
+  levelBefore: number
+  levelAfter: number
+  levelsGained: number
+  skillPointsGained: number
+}
+
+/**
+ * The state of a boss encounter.
+ *
+ * The puzzle is attached only while a phase is live, and never carries an
+ * answer. A terminal encounter reports what it paid and nothing to answer.
+ */
+export interface BossEncounter {
+  encounterId: string
+  bossId: string
+  bossCode: string
+  bossName: string
+  bossDifficulty: BossDifficulty
+  status: EncounterStatus
+  currentStage: number
+  stageCount: number
+  bossIntegrity: number
+  /** Integrity as a percentage, derived server-side. */
+  bossIntegrityPercent: number
+  reachedStage: number
+  puzzle?: PuzzleChallenge
+  stageName?: string
+  stageDescription?: string
+  xpAwarded: number
+  coinAwarded: number
+  startedAt: string
+  expiresAt: string
+  cooldownUntil?: string
+  /** Player-safe narration of what just happened. */
+  outcomeMessage?: string
+  /** Present only on a victory. */
+  rewards?: BossRewards
+  progression?: BossProgression
+}
+
+/** Request body for a boss stage submission: two fields, deliberately. */
+export interface BossStageSubmissionPayload {
+  puzzleId: string
+  answer: string
+}
