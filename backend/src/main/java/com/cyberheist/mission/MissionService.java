@@ -28,6 +28,8 @@ import com.cyberheist.puzzle.PuzzleService;
 import com.cyberheist.puzzle.dto.PuzzleChallengeView;
 import com.cyberheist.reward.Reward;
 import com.cyberheist.reward.RewardService;
+import com.cyberheist.shop.EquipmentBonusService;
+import com.cyberheist.shop.ItemEffectType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -74,6 +76,7 @@ public class MissionService {
     private final RewardService rewardService;
     private final PuzzleService puzzleService;
     private final EnergyService energyService;
+    private final EquipmentBonusService equipmentBonusService;
 
     private final Clock clock;
 
@@ -84,9 +87,10 @@ public class MissionService {
                           PuzzleAttemptRepository puzzleRepository,
                           RewardService rewardService,
                           PuzzleService puzzleService,
-                          EnergyService energyService) {
+                          EnergyService energyService,
+                          EquipmentBonusService equipmentBonusService) {
         this(missionRepository, progressRepository, profileRepository, puzzleRepository,
-                rewardService, puzzleService, energyService, Clock.systemUTC());
+                rewardService, puzzleService, energyService, equipmentBonusService, Clock.systemUTC());
     }
 
     MissionService(MissionRepository missionRepository,
@@ -96,6 +100,7 @@ public class MissionService {
                    RewardService rewardService,
                    PuzzleService puzzleService,
                    EnergyService energyService,
+                   EquipmentBonusService equipmentBonusService,
                    Clock clock) {
         this.missionRepository = missionRepository;
         this.progressRepository = progressRepository;
@@ -104,6 +109,7 @@ public class MissionService {
         this.rewardService = rewardService;
         this.puzzleService = puzzleService;
         this.energyService = energyService;
+        this.equipmentBonusService = equipmentBonusService;
         this.clock = clock;
     }
 
@@ -194,14 +200,23 @@ public class MissionService {
         if (progress.getStatus().isCompleted()) {
             throw new MissionAlreadyCompletedException("This mission has already been completed");
         }
-        if (profile.getEnergy() < mission.getEnergyCost()) {
+
+        // Energy efficiency shortens the cost, deterministically and never below
+        // one energy. The mission row still reports its base cost; the discount
+        // is this player's, so it is applied here rather than being baked into
+        // the catalogue.
+        int energyCost = EquipmentBonusService.applyEnergyDiscount(
+                mission.getEnergyCost(),
+                equipmentBonusService.bonusFor(userId, ItemEffectType.ENERGY_EFFICIENCY));
+
+        if (profile.getEnergy() < energyCost) {
             throw new InsufficientEnergyException(
-                    "Not enough energy: this mission costs %d".formatted(mission.getEnergyCost()));
+                    "Not enough energy: this mission costs %d".formatted(energyCost));
         }
 
         // Energy is charged on start rather than on completion, so an abandoned
         // mission still costs the player.
-        profile.spendEnergy(mission.getEnergyCost());
+        profile.spendEnergy(energyCost);
 
         Instant now = clock.instant();
         progress.start(now);
@@ -339,8 +354,12 @@ public class MissionService {
                     energyService.describe(profile));
         }
 
-        // Correct. Rewards still come from the mission row via RewardService.
-        Reward reward = new Reward(mission.getXpReward(), mission.getCoinReward());
+        // Correct. Rewards still come from the mission row via RewardService,
+        // which applies the player's equipment bonuses on top of the base
+        // amounts. This service never computes the final figures itself.
+        Reward reward = RewardService.applyBonuses(
+                new Reward(mission.getXpReward(), mission.getCoinReward()),
+                equipmentBonusService.bonusesFor(userId));
         ProgressionResult progression = rewardService.grant(profile, reward);
 
         puzzle.submit(PuzzleAttemptStatus.SUCCEEDED, now);

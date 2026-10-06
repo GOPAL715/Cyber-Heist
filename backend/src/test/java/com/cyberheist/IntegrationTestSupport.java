@@ -8,6 +8,11 @@ import com.cyberheist.player.PlayerProfileRepository;
 import com.cyberheist.puzzle.PuzzleAttempt;
 import com.cyberheist.puzzle.PuzzleAttemptRepository;
 import com.cyberheist.puzzle.PuzzleService;
+import com.cyberheist.shop.EquipmentSlot;
+import com.cyberheist.shop.Item;
+import com.cyberheist.shop.ItemRepository;
+import com.cyberheist.shop.PlayerInventoryItem;
+import com.cyberheist.shop.PlayerInventoryRepository;
 import com.cyberheist.user.Role;
 import com.cyberheist.user.User;
 import com.cyberheist.user.UserRepository;
@@ -60,6 +65,12 @@ public abstract class IntegrationTestSupport {
 
     @Autowired
     protected PlayerProfileRepository profileRepository;
+
+    @Autowired
+    protected ItemRepository itemRepository;
+
+    @Autowired
+    protected PlayerInventoryRepository inventoryRepository;
 
     @Autowired
     protected MissionProgressRepository progressRepository;
@@ -330,6 +341,121 @@ public abstract class IntegrationTestSupport {
 
     /** Request body for {@code /auth/refresh} and {@code /auth/logout}. */
     public record RefreshPayload(String refreshToken) {
+    }
+
+    /**
+     * Sets a player's coin balance directly.
+     *
+     * <p>Mirrors {@link #setEnergy}: the entity deliberately exposes no coin
+     * setter because production code must go through the reward and purchase
+     * paths, but a test needs an exact balance to set up an affordability case
+     * and cannot reach one by playing for hours.
+     */
+    protected void setCoins(String email, long coins) {
+        PlayerProfile profile = profileOf(email);
+        try {
+            java.lang.reflect.Field field = PlayerProfile.class.getDeclaredField("coins");
+            field.setAccessible(true);
+            field.set(profile, coins);
+            profileRepository.saveAndFlush(profile);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Unable to set the coin balance in a test", ex);
+        }
+        assertThat(profileOf(email).getCoins()).isEqualTo(coins);
+    }
+
+    /** Stable id of a seeded item, addressed by its catalogue code. */
+    protected UUID itemId(String code) {
+        return itemRepository.findByCode(code)
+                .map(Item::getId)
+                .orElseThrow(() -> new IllegalStateException("Seeded item not found: " + code));
+    }
+
+    /** The catalogue row for a seeded item code. */
+    protected Item item(String code) {
+        return itemRepository.findByCode(code)
+                .orElseThrow(() -> new IllegalStateException("Seeded item not found: " + code));
+    }
+
+    /**
+     * Retires a catalogue item, then restores it.
+     *
+     * <p>{@link Item} exposes no mutators because in production the catalogue is
+     * written by migration alone. A test needs a retired item to prove the shop
+     * hides it and refuses to sell it, so the flag is written reflectively -
+     * the same approach {@link #setEnergy} uses rather than opening a hole in
+     * the entity for production code to use.
+     *
+     * <p>Restoring in a finally block matters more than it looks: every
+     * integration test class shares one in-memory database, so an item left
+     * retired by one test would silently break every later test that happens to
+     * use it.
+     */
+    protected void withItemRetired(String code, Runnable assertions) {
+        setItemActive(code, false);
+        try {
+            assertions.run();
+        } finally {
+            setItemActive(code, true);
+        }
+    }
+
+    private void setItemActive(String code, boolean active) {
+        Item item = item(code);
+        try {
+            java.lang.reflect.Field field = Item.class.getDeclaredField("active");
+            field.setAccessible(true);
+            field.set(item, active);
+            itemRepository.saveAndFlush(item);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Unable to change an item's active flag in a test", ex);
+        }
+        assertThat(item(code).isActive()).as("item %s active flag", code).isEqualTo(active);
+    }
+
+    /** The caller's inventory row for an item code, or null when unowned. */
+    protected java.util.Optional<PlayerInventoryItem> ownedItem(String email, String itemCode) {
+        return inventoryRepository.findByUserIdAndItemId(userIdOf(email), itemId(itemCode));
+    }
+
+    /** Buys an item through the real endpoint and returns the parsed body. */
+    protected JsonNode purchase(String token, UUID itemId) throws Exception {
+        MvcResult result = mockMvc.perform(
+                        authPost("/api/v1/player/shop/items/" + itemId + "/purchase", token))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+    }
+
+    /**
+     * Buys an item and returns the raw response without asserting the status,
+     * so a test can drive a failure case such as insufficient coins.
+     */
+    protected MvcResult purchaseExpectingFailure(String token, UUID itemId) throws Exception {
+        return mockMvc.perform(authPost("/api/v1/player/shop/items/" + itemId + "/purchase", token))
+                .andReturn();
+    }
+
+    /** Equips an owned inventory row into a slot through the real endpoint. */
+    protected JsonNode equip(String token, EquipmentSlot slot, UUID inventoryItemId) throws Exception {
+        MvcResult result = mockMvc.perform(authPost("/api/v1/player/equipment/" + slot, token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EquipPayload(inventoryItemId))))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+    }
+
+    /** Parsed body of an authenticated GET. */
+    protected JsonNode getData(String token, String url) throws Exception {
+        MvcResult result = mockMvc.perform(authGet(url, token))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+    }
+
+    /** Request body for {@code /player/equipment/{slot}}. */
+    public record EquipPayload(java.util.UUID inventoryItemId) {
     }
 
     /** Request body for {@code /missions/{id}/puzzle/submit}. */

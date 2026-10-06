@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { ProtectedRoute, PublicOnlyRoute } from '@/routes/guards'
+import { AppRoutes } from '@/routes'
 import { AuthProvider } from '@/context/AuthContext'
 import { saveSession } from '@/services/sessionStorage'
 import { jsonResponse, tokens } from './helpers'
@@ -80,4 +81,33 @@ describe('PublicOnlyRoute', () => {
 
     expect(await screen.findByText('Login page')).toBeInTheDocument()
   })
+})
+
+describe('application routes', () => {
+  /**
+   * Renders the real route table rather than a stand-in, so these tests would
+   * fail if a protected page were ever moved outside the guard.
+   */
+  function renderAppAt(path: string) {
+    return render(
+      <MemoryRouter initialEntries={[path]}>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+  }
+
+  it.each(['/dashboard', '/missions', '/shop', '/inventory'])(
+    'keeps an unauthenticated visitor out of %s',
+    async (path) => {
+      // No session is stored, so the guard must redirect before any page -
+      // and therefore any API call - can run.
+      renderAppAt(path)
+
+      expect(await screen.findByRole('heading', { name: /jack in/i })).toBeInTheDocument()
+      expect(screen.queryByText(/Cyber Heist Shop/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/welcome back/i)).not.toBeInTheDocument()
+    },
+  )
 })

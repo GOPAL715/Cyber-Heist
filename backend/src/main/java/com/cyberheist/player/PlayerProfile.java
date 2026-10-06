@@ -146,6 +146,25 @@ public class PlayerProfile extends AuditableEntity {
     }
 
     /**
+     * Spends coins, refusing to go negative.
+     *
+     * <p>Used only by {@code ShopService} inside a locked purchase transaction,
+     * so the balance tested is the balance deducted from. Callers must hold the
+     * pessimistic profile lock first (see {@code PlayerProfileRepository}).
+     *
+     * @throws IllegalStateException when the player cannot afford the price
+     */
+    public void spendCoins(long amount) {
+        if (amount < 0) {
+            throw new IllegalArgumentException("Coin price must not be negative");
+        }
+        if (this.coins < amount) {
+            throw new IllegalStateException("Insufficient coins");
+        }
+        this.coins -= amount;
+    }
+
+    /**
      * Spends energy, refusing to go negative.
      *
      * <p>The caller is expected to have refreshed regeneration first (see

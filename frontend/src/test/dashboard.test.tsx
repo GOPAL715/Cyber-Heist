@@ -3,7 +3,7 @@ import { screen, waitFor } from '@testing-library/react'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { saveSession } from '@/services/sessionStorage'
 import { jsonResponse, renderWithProviders, tokens } from './helpers'
-import type { Mission, PlayerProfile } from '@/types'
+import type { EquipmentLoadout, Mission, PlayerProfile } from '@/types'
 import { mission } from './missionFixtures'
 
 /**
@@ -33,11 +33,48 @@ const profile: PlayerProfile = {
 const availableMission: Mission = mission()
 
 /**
- * Mocks the calls the dashboard makes in order: session restore, profile, and
- * the mission board list.
+ * A loadout with one filled slot, as the server sends it.
+ *
+ * <p>The percentages are the server's aggregated, capped figures. The dashboard
+ * renders them verbatim rather than summing item effects itself.
+ */
+const loadout: EquipmentLoadout = {
+  equipment: [
+    {
+      slot: 'MAIN_DEVICE',
+      item: {
+        inventoryId: 'inv-1',
+        itemId: '21111111-0000-4000-8000-000000000001',
+        code: 'BASIC_LAPTOP',
+        name: 'Basic Laptop',
+        description: 'A refurbished deck.',
+        category: 'DEVICE',
+        rarity: 'COMMON',
+        slot: 'MAIN_DEVICE',
+        quantity: 1,
+        equipped: true,
+        equippedIn: 'MAIN_DEVICE',
+        effects: [{ type: 'MISSION_SPEED', value: 5 }],
+      },
+    },
+    { slot: 'PROCESSOR', item: null },
+    { slot: 'SECURITY', item: null },
+    { slot: 'SOFTWARE', item: null },
+    { slot: 'NETWORK', item: null },
+  ],
+  bonuses: [{ type: 'MISSION_SPEED', percent: 5 }],
+}
+
+/**
+ * Mocks the calls the dashboard makes in order: session restore, then the
+ * profile and loadout pair, then the mission board list.
+ *
+ * <p>The loadout is now part of the dashboard because it reports the bonuses
+ * actually applied to rewards, so the profile and loadout are fetched together.
  */
 function mockDashboardRequests(overrides: {
   profile?: PlayerProfile
+  loadout?: EquipmentLoadout
   missions?: Mission[]
 } = {}) {
   return vi
@@ -45,6 +82,9 @@ function mockDashboardRequests(overrides: {
     .mockResolvedValueOnce(jsonResponse({ success: true, data: tokens.user }))
     .mockResolvedValueOnce(
       jsonResponse({ success: true, data: overrides.profile ?? profile }),
+    )
+    .mockResolvedValueOnce(
+      jsonResponse({ success: true, data: overrides.loadout ?? loadout }),
     )
     .mockResolvedValueOnce(
       jsonResponse({
@@ -151,6 +191,8 @@ describe('DashboardPage', () => {
       .mockResolvedValueOnce(jsonResponse({ success: true, data: tokens }))
       // Profile with the rotated access token.
       .mockResolvedValueOnce(jsonResponse({ success: true, data: profile }))
+      // Loadout, fetched alongside the profile.
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: loadout }))
       // Mission board list.
       .mockResolvedValueOnce(jsonResponse({ success: true, data: [availableMission] }))
 
@@ -165,6 +207,7 @@ describe('DashboardPage', () => {
         expect.stringContaining('/api/v1/users/me'),
         expect.stringContaining('/api/v1/auth/refresh'),
         expect.stringContaining('/api/v1/player/profile'),
+        expect.stringContaining('/api/v1/player/equipment'),
         expect.stringContaining('/api/v1/player/missions'),
       ]),
     )
@@ -184,15 +227,35 @@ describe('DashboardPage', () => {
     expect(await screen.findByText('Profile unavailable right now')).toBeInTheDocument()
   })
 
-  it('marks the not-yet-built systems as coming soon', async () => {
+  it('summarises the loadout and links to the shop and inventory', async () => {
     signIn()
     mockDashboardRequests()
 
     renderWithProviders(<DashboardPage />)
 
-    expect(await screen.findByText('Scan the Perimeter')).toBeInTheDocument()
-    // The puzzle engine is built now, so its placeholder is gone.
-    expect(screen.queryByText(/puzzle engine/i)).not.toBeInTheDocument()
-    expect(screen.getByText(/upgrades & skill tree/i)).toBeInTheDocument()
+    expect(await screen.findByText(/player loadout/i)).toBeInTheDocument()
+    // The server's aggregated bonus appears in the bonuses footer. The same
+    // effect also shows on the slot itself, because per-item and aggregate are
+    // different figures and both are rendered.
+    expect(screen.getAllByText('+5% Mission Speed').length).toBeGreaterThan(0)
+    expect(screen.getByLabelText('Active bonuses')).toHaveTextContent('+5% Mission Speed')
+    expect(screen.getByRole('link', { name: /visit the shop/i })).toHaveAttribute('href', '/shop')
+    expect(screen.getByRole('link', { name: /open your inventory/i })).toHaveAttribute(
+      'href',
+      '/inventory',
+    )
+    // The Phase 4 placeholder is gone now the systems exist.
+    expect(screen.queryByText(/upgrades & skill tree/i)).not.toBeInTheDocument()
+  })
+
+  it('omits empty slots from the compact dashboard loadout', async () => {
+    signIn()
+    mockDashboardRequests()
+
+    renderWithProviders(<DashboardPage />)
+
+    expect(await screen.findByText(/player loadout/i)).toBeInTheDocument()
+    expect(screen.getByText('Basic Laptop')).toBeInTheDocument()
+    expect(screen.queryByText('Empty')).not.toBeInTheDocument()
   })
 })

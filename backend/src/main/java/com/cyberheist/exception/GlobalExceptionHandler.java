@@ -107,14 +107,23 @@ public class GlobalExceptionHandler {
                 "You do not have permission to access this resource", request);
     }
 
+/**
+     * Last-resort translation of a constraint violation that reached the handler.
+     *
+     * <p>Services check their preconditions first and raise a specific
+     * {@link ApiException} for the common cases - a taken username, an item
+     * already owned - so those never arrive here. This only fires when a race or
+     * an unmapped constraint wins, which is why the message is deliberately
+     * generic: naming a constraint here would describe a rule the client should
+     * have been told about more precisely, and an unexpected constraint name can
+     * disclose schema detail.
+     */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiErrorResponse> handleDataIntegrity(DataIntegrityViolationException ex,
-                                                                HttpServletRequest request) {
-        // The unique constraints on username/email can still lose a race against
-        // the pre-checks performed in the service layer.
+                                                                 HttpServletRequest request) {
         log.warn("Data integrity violation on {}: {}",
                 request.getRequestURI(), ex.getMostSpecificCause().getMessage());
-        return build(HttpStatus.CONFLICT, "Username or email is already taken", request);
+        return build(HttpStatus.CONFLICT, "That request conflicts with existing data", request);
     }
 
     @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})

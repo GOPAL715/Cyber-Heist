@@ -4,14 +4,16 @@ A cyberpunk-themed browser game.
 
 - **Phase 1** — technical foundation and authentication.
 - **Phase 2** — player progression (XP, levels, coins, energy) and the mission system.
-- **Phase 3 (current)** — the puzzle engine and passive energy regeneration.
+- **Phase 3** — the puzzle engine and passive energy regeneration.
+- **Phase 4 (current)** — the item catalogue, shop, inventory and equipment.
 
 Implemented gameplay loop:
 
 > View missions → start mission → **receive a puzzle** → solve it → submit →
-> server validates → rewards → update XP/coins/energy → level up
+> server validates → rewards → update XP/coins/energy → level up →
+> **spend coins in the shop** → equip gear → **rewards improve**
 
-Inventory, shop, skill tree, bosses, achievements, leaderboards, multiplayer,
+Skill trees, bosses, achievements, leaderboards, multiplayer, PvP,
 AI-generated content and payments are **out of scope** and are not implemented.
 The schema and code are laid out so those systems can be added later without a
 redesign.
@@ -60,7 +62,9 @@ token, unwraps the response envelope and converts failures into a typed
 
 ```text
 register ─▶ create User (BCrypt hash, PLAYER) + create PlayerProfile
-           └─ one transaction, so a player never exists without game state
+           └─ one transaction, so a player never exists without game state,
+              and the free Basic Laptop is granted and equipped in the same
+              transaction
 
 login    ─▶ verify password ─▶ issue JWT access token + opaque refresh token
                                  (only the SHA-256 hash of the refresh
@@ -293,7 +297,185 @@ simultaneous starts cannot both observe 78 energy and both spend 12.
 
 ---
 
-## Technology stack
+## Inventory, equipment and the shop
+
+Phase 4 gives coins a purpose: the shop sells a server-owned catalogue of items,
+the inventory records what a player owns, and five equipment slots decide which
+of those items are actually active.
+
+```text
+MISSION ─▶ XP + coins ─▶ SHOP ─▶ item enters INVENTORY ─▶ EQUIP ─▶ bonuses
+                        ▲                                                     │
+                        └─────────────────────────────────────────────────────┘
+```
+
+### The trust rule
+
+The frontend is never authoritative for any of the following. Each is decided by
+the server from its own tables:
+
+| Value | Decided by |
+| --- | --- |
+| Coin balance | `player_profiles.coins`, changed only by `RewardService` and `PurchaseService` |
+| Item ownership | `player_inventory`, written only by `PurchaseService` and `StarterEquipmentService` |
+| Item price | `items.price` |
+| Equipped state | `player_equipment`, written only by `EquipmentService` |
+| Item rarity | `items.rarity` |
+| Item bonuses | `item_effects.effect_value`, aggregated by `EquipmentBonusService` |
+| Purchase success | `PurchaseService`, in one transaction |
+| Equipment effects | `EquipmentBonusService`, the only aggregation in the codebase |
+
+The purchase endpoint is the clearest expression of this. It takes an item id
+and **nothing else** — there is no request DTO, so a body carrying
+`{"price": 1, "coins": 1000000, "bonus": 999999}` has no field it could bind to.
+The client does not supply a price that gets ignored; it has no way to supply
+one at all.
+
+### Categories, rarity and slots
+
+| | Values |
+| --- | --- |
+| **Category** | `DEVICE`, `PROCESSOR`, `SECURITY`, `SOFTWARE`, `NETWORK` |
+| **Rarity** | `COMMON`, `UNCOMMON`, `RARE`, `EPIC`, `LEGENDARY` (no `MYTHIC` yet) |
+| **Slot** | `MAIN_DEVICE`, `PROCESSOR`, `SECURITY`, `SOFTWARE`, `NETWORK` |
+
+An item's category determines its slot, and rarity is a property of the item
+definition. Neither is ever chosen by a client. Adding a category or a slot later
+means a new enum constant, a new CHECK constraint in a new migration, and a seed
+row — no redesign, because nothing else keys off the closed set.
+
+### Item effects
+
+Effects are **typed and relational**, not a JSON blob: these values drive reward
+and energy arithmetic, so they need a foreign key, CHECK constraints and an index
+that free-form JSON would not give.
+
+| Effect type | Applies to |
+| --- | --- |
+| `EXPERIENCE_BONUS` | Mission XP payout |
+| `COIN_BONUS` | Mission coin payout |
+| `ENERGY_EFFICIENCY` | Mission energy **cost** (a discount) |
+| `MISSION_SPEED` | Aggregated and exposed; **not yet applied to any mechanic** |
+| `PUZZLE_BONUS` | Aggregated and exposed; **not yet applied to puzzle generation** |
+
+`MISSION_SPEED` and `PUZZLE_BONUS` are stored, aggregated, capped and returned to
+the client, but Phase 4 deliberately does not wire them into a mechanic. Mission
+duration is advisory and puzzles are generated from a seed, so there is nothing
+honest for either to modify yet. They are infrastructure, and the UI labels them
+without implying an effect that does not exist. Puzzle providers were **not**
+modified to read equipment.
+
+### Bonus calculation and caps
+
+`EquipmentBonusService` is the single place an equipped item's percentage is
+read. Every mechanic that a bonus touches goes through it, so there is exactly
+one definition of what a player's loadout is worth.
+
+Totals are clamped per effect type before anyone sees them:
+
+| Effect | Cap |
+| --- | --- |
+| `EXPERIENCE_BONUS` | 50% |
+| `COIN_BONUS` | 50% |
+| `ENERGY_EFFICIENCY` | 30% |
+| `MISSION_SPEED` | 30% |
+| `PUZZLE_BONUS` | 30% |
+
+The caps live in Java rather than in the database because a database cannot
+constrain a sum across rows. Without them, five legendary items would stack
+without limit; with them, +50% XP is the ceiling no matter how the loadout is
+built.
+
+### Rounding
+
+All arithmetic is integer, and halves round **up**:
+
+```text
+final = base + (base × percent + 50) / 100          // XP, coins
+cost  = (base × (100 − percent) + 50) / 100, min 1  // energy
+```
+
+Floating point is rejected deliberately: `50 × 0.10` is not exactly `5` in
+binary floating point, and a payout that varied with the representation of a
+decimal would be a rounding bug waiting to be reported as a wrong reward. 50 XP
+at +10% is 55; 50 XP at +5% is 53; a 20-energy mission at +10% efficiency costs
+18, and never less than 1.
+
+### Purchase flow
+
+```text
+POST /player/shop/items/{itemId}/purchase          request body: none
+   1  authenticate                             → 401
+   2  item must exist                          → 404
+   3  item must be active                      → 400
+   4  LOCK the player's profile row            (pessimistic write)
+   5  player must not already own it           → 409
+   6  balance must cover items.price           → 400
+   7  deduct coins + insert the inventory row  (one transaction)
+```
+
+Steps 5–7 happen under the profile lock, so two simultaneous requests cannot
+both pass the affordability check, and the duplicate-ownership check cannot be
+lost to a race. Every rejection occurs before the first write, so a refused
+purchase costs the player nothing and leaves no trace. There is no
+catch-the-constraint-violation fallback, because a failed statement marks the
+transaction rollback-only and the retry could not commit either.
+
+### Equip / unequip flow
+
+```text
+POST   /player/equipment/{slot}   { "inventoryItemId": "…" }
+DELETE /player/equipment/{slot}
+```
+
+Equip locks the profile row first (serialising all loadout changes for that
+player), then verifies ownership **by id and owner in one query**, then the slot,
+then writes. An inventory row belonging to another player is simply not found, so
+the response cannot confirm that a guessed id is real. Unequip deletes only the
+loadout row: the item stays owned and the bonus disappears because aggregation
+reads the loadout, not the inventory. Unequipping an empty slot is a no-op, so a
+double-click cannot produce an error the player cannot act on.
+
+### Starting equipment
+
+Every newly registered player is granted a free **Basic Laptop** and it is
+equipped immediately. `StarterEquipmentService` looks it up by a hard-coded code,
+so a registration request cannot name or choose a starter item, and the grant
+runs inside the registration transaction, so a failure rolls the account back
+rather than leaving a player with no gear.
+
+The rationale: bonuses only matter once something is equipped. Without a free
+device a new player would see five empty slots and no bonuses anywhere, with no
+way to tell what the system is for. Equipping it costs nothing and grants a small
+mission-speed bonus from the very first loadout screen.
+
+### The catalogue and the economy
+
+15 seeded items. Each has exactly one effect, so the first loadout a player builds
+reads as a set of distinct trade-offs rather than a stack of the same number.
+
+| Rarity | Items | Price | Roughly |
+| --- | --- | --- | --- |
+| `COMMON` | Basic Laptop, Basic Processor, Basic Firewall | 0 / 40 / 60 | 2–3 missions |
+| `UNCOMMON` | Recon Laptop, Encrypted Processor, Adaptive Firewall | 150 / 180 / 220 | 4–9 missions |
+| `RARE` | Stealth Laptop, Neural Processor, Advanced Intrusion Suite | 550 / 650 / 750 | 6–14 missions |
+| `EPIC` | Quantum Processor, Ghost Protocol, Military Firewall | 1200 / 1350 / 1500 | 13+ missions |
+| `LEGENDARY` | Cyber Phantom Deck, Quantum Core, Zero-Day Toolkit | 3200 / 4000 / 5000 | 35–60 missions |
+
+Measured against the Phase 2 rewards — 15 missions paying **1133 coins** in total,
+25 to 190 each, with a new player starting on 100:
+
+- The full catalogue costs **18,850**, so nothing past `EPIC` is reachable without
+  replaying the board. The player is always saving for something.
+- A minimal five-slot loadout, cheapest item per slot, costs **1,950** (the
+  starter laptop is free). The strongest possible loadout costs **15,050**.
+- Early gear arrives within a session; the top of the catalogue is a long-term
+  goal rather than a purchase.
+
+Item ids are fixed rather than generated, so tests and later phases can address
+an item by a stable id.
+
+---
 
 **Backend**
 
@@ -414,6 +596,7 @@ Expected startup output:
 
 ```text
 Flyway: Migrating schema "public" to version "1 - create core schema"
+Flyway: Migrating schema "public" to version "5 - inventory equipment shop"
 Puzzle engine ready with providers: [CIPHER, SEQUENCE, PATTERN, LOGIC, TIMED]
 Started CyberHeistApplication
 ```
@@ -438,7 +621,7 @@ Open <http://localhost:5173>. The browser calls the API directly at
 ## Running the tests
 
 ```bash
-# Backend — 263 tests
+# Backend — 332 tests
 cd backend
 mvn test
 
@@ -454,38 +637,60 @@ npm run build
 ```
 
 The backend suite runs against an in-memory H2 database in **PostgreSQL mode**
-and applies the *same* Flyway migrations (V1–V4), so no external service is
+and applies the *same* Flyway migrations (V1–V5), so no external service is
 required and the schema under test is the schema that ships.
 
-What the Phase 3 suites cover:
+What the Phase 4 suites cover:
 
 | Suite | Covers |
 | --- | --- |
-| `PuzzleProviderContractTest` | Registry completeness, determinism, generality, answer/option validity across all five types |
-| `CipherPuzzleProviderTest` | Correct, wrong, invalid answers; shift reversibility |
-| `SequencePuzzleProviderTest` | Correct, wrong, deterministic generation, all three rule families |
-| `PatternPuzzleProviderTest` | Correct, wrong, row/column rule reconstruction |
-| `LogicPuzzleProviderTest` | Correct, wrong, exactly one unreachable node |
-| `TimedPuzzleProviderTest` | Before expiry, after expiry, window lengths |
-| `PuzzleLifecycleIntegrationTest` | start → solve → reward; wrong answer; expiry; restart supersedes |
-| `PuzzleSecurityIntegrationTest` | Wrong player, wrong mission, fake id, duplicate submit, bypass, unauthenticated |
-| `EnergyServiceTest` | Start at 100, spend, one interval, many intervals, cap, no negative, long inactivity, backwards clock |
-| `EnergyRegenerationIntegrationTest` | Server-clock regeneration through the API, cap, partial interval |
+| `ShopCatalogueIntegrationTest` | Active items only, inactive hidden, item detail, unknown id, auth required, owned flags |
+| `PurchaseIntegrationTest` | Success, server price, insufficient coins, retired item, duplicate `409` with no charge, price/body tampering, caller's balance only |
+| `ShopOwnershipIntegrationTest` | Inventory scoping, cannot equip another's row, cannot unequip another's slot, cannot spend another's coins, client-supplied `userId` ignored |
+| `EquipmentIntegrationTest` | Equip, equipped state, slot replacement, incompatible slot, unknown slot, retired item, unequip keeps the item, idempotent unequip, re-equip |
+| `ConcurrentPurchaseIntegrationTest` | Two simultaneous purchases of different items against insufficient funds; two of the same item; two equips into one slot |
+| `EquipmentBonusRulesTest` | Rounding table, determinism sweep, energy floor at 1, cap clamping, reward modification |
+| `StarterAndBonusIntegrationTest` | Free starter item, auto-equipped, grants a bonus, mission reward = base + bonus, unequip removes it, energy discount, bonus injection ignored |
 
-Every Phase 2 regression test still passes, including the 8-thread concurrent
-completion test, duplicate-completion protection, ownership checks, XP
-progression and mission-reachability tests. Phase 2 mission tests were rewritten
-to drive the puzzle loop — none was removed or weakened.
+Every Phase 1–3 regression test still passes. No test was removed or weakened;
+the Phase 4 count is 332 against a 263 baseline.
+
+The concurrency test is the one that matters most economically. With 800 coins,
+it fires two simultaneous requests for items costing 750 and 550 — 1300 coins of
+intent against 800 of balance — and asserts that exactly one succeeds, exactly one
+inventory row is created beyond the starter laptop, and the balance reflects one
+price and never goes negative.
 
 > **PostgreSQL verification status.** The migrations have been authored
 > PostgreSQL-compatibly and were executed through Flyway against H2 in PostgreSQL
 > mode, but they have **not** been executed against a real PostgreSQL instance.
-> In this environment the local PostgreSQL 18 service requires `scram-sha-256`
-> authentication on every connection path (`local`, `127.0.0.1`, `::1`) and no
-> credentials were available, while the Docker daemon was not running so
-> `docker compose up postgres` was unavailable. **H2 in PostgreSQL mode is not
-> PostgreSQL runtime verification** and is not claimed as such. See *Known
-> limitations*.
+> In this environment the local PostgreSQL 18 service is listening on 5432 but
+> requires password authentication and no credentials were available (there is no
+> `.env`), and the Docker daemon had no `postgres` container to start.
+> **H2 in PostgreSQL mode is not PostgreSQL runtime verification** and is not
+> claimed as such. See *Known limitations*.
+
+### Live HTTP verification
+
+`backend/verify-live.ps1` starts the real application and exercises the Phase 4
+API over HTTP with real bearer tokens, then shuts it down:
+
+```bash
+cd backend
+mvn clean package
+mvn dependency:build-classpath -Dmdep.outputFile=target/cp.txt
+powershell -File verify-live.ps1
+```
+
+It runs 28 checks covering registration, login, starting coins and gear, the
+catalogue, item detail, purchase and deduction, equipping, the loadout, bonus
+aggregation, a full mission played to a server-calculated payout, unequipping,
+duplicate purchase, price tampering, bonus tampering, cross-player access in both
+directions, insufficient coins, retired items and unauthenticated access.
+
+Because no PostgreSQL credentials are available, the script points the
+application at an H2 in-memory database in PostgreSQL mode. **This verifies the
+API and the business rules, not PostgreSQL.**
 
 ---
 
@@ -500,8 +705,9 @@ creates or alters anything — `create` and `update` are deliberately not used.
 | `V2__create_mission_system.sql` | `missions`, `mission_progress` |
 | `V3__seed_missions.sql` | 15 seeded missions across 5 categories |
 | `V4__puzzle_attempts_and_energy_regen.sql` | `missions.puzzle_type`, `player_profiles.last_energy_update`, `puzzle_attempts` |
+| `V5__inventory_equipment_shop.sql` | `items`, `item_effects`, `player_inventory`, `player_equipment` + 15 seeded items |
 
-V1–V3 are never modified; Phase 3 is entirely additive.
+V1–V4 are never modified; Phases 3 and 4 are entirely additive.
 
 ### `users`
 
@@ -617,6 +823,76 @@ Constraints that make duplicate reward structurally impossible:
 - `CHECK (attempt_number >= 1)` plus CHECK constraints on every enum column.
 - Indexes on `user_id`, `mission_id` and `status`.
 
+### `items`
+
+The **server-owned catalogue**. It defines items; it holds no player state.
+There is no endpoint that creates, edits or prices an item.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key, fixed per seeded item |
+| `code` | `VARCHAR(64)` | **Unique**, stable external id |
+| `name` | `VARCHAR(120)` | |
+| `description` | `VARCHAR(500)` | |
+| `category` | `VARCHAR(32)` | `DEVICE` \| `PROCESSOR` \| `SECURITY` \| `SOFTWARE` \| `NETWORK` |
+| `rarity` | `VARCHAR(16)` | `COMMON` \| `UNCOMMON` \| `RARE` \| `EPIC` \| `LEGENDARY` |
+| `equipment_slot` | `VARCHAR(16)` | The slot the item goes in |
+| `price` | `BIGINT` | ≥ 0; **the only price the server will ever charge** |
+| `active` | `BOOLEAN` | Inactive items are hidden and cannot be bought |
+| `stackable` | `BOOLEAN` | Always `false` in Phase 4; reserved for consumables |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | |
+
+CHECK constraints enforce the category, rarity, slot, non-negative price and both
+booleans. Indexed on `active`, `category` and `rarity`.
+
+### `item_effects`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key |
+| `item_id` | `UUID` | FK → `items` (cascade) |
+| `effect_type` | `VARCHAR(32)` | The five controlled effect types |
+| `effect_value` | `INTEGER` | 0–100, a percentage |
+
+**`UNIQUE (item_id, effect_type)`** — one row per effect per item, so aggregation
+cannot double count. `CHECK (effect_value >= 0 AND effect_value <= 100)`, and the
+type is CHECK-constrained. Indexed on `item_id`.
+
+### `player_inventory`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key; this is the `inventoryItemId` an equip request sends |
+| `user_id` | `UUID` | FK → `users` (cascade) |
+| `item_id` | `UUID` | FK → `items` (**restrict**) |
+| `quantity` | `INTEGER` | `> 0`; fixed at 1 in Phase 4 |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | |
+
+**`UNIQUE (user_id, item_id)`** — the Phase 4 rule that a player owns at most one
+copy of any item, and the reason a duplicate purchase is a `409` rather than a
+second row. `ON DELETE RESTRICT` on the item means an item still owned by a player
+cannot be deleted out from under their inventory.
+
+The `quantity` column exists only so a future consumable needs no schema redesign;
+equipment never increments it.
+
+### `player_equipment`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `UUID` | Primary key |
+| `user_id` | `UUID` | FK → `users` (cascade) |
+| `slot` | `VARCHAR(16)` | CHECK-constrained to the five slots |
+| `inventory_item_id` | `UUID` | FK → `player_inventory` (cascade) |
+| `equipped_at` | `TIMESTAMPTZ` | Replaced in place on a swap |
+
+- **`UNIQUE (user_id, slot)`** — one item per slot.
+- **`UNIQUE (inventory_item_id)`** — the same ownership row cannot occupy two slots.
+
+The row references an *inventory* row rather than an item, so the join back to
+the item definition is explicit and the loadout cannot point at something the
+player does not own.
+
 ---
 
 ## API overview
@@ -640,6 +916,13 @@ All endpoints are under `/api/v1`. Success bodies use
 | `GET` | `/player/missions/{id}/puzzle` | bearer | `200` | Re-read the active puzzle after a reload |
 | `POST` | `/player/missions/{id}/puzzle/submit` | bearer | `200` | Submit an answer for that mission's puzzle |
 | `POST` | `/player/missions/{id}/complete` | bearer | `200` | **Cannot pay.** Kept for compatibility |
+| `GET` | `/player/shop` | bearer | `200` | Active item catalogue + balance + owned flags |
+| `GET` | `/player/shop/items/{itemId}` | bearer | `200` | One item's server-defined detail |
+| `POST` | `/player/shop/items/{itemId}/purchase` | bearer | `201` | Buy at the catalogue price. **No request body** |
+| `GET` | `/player/inventory` | bearer | `200` | Owned items with rarity, effects, equipped state |
+| `GET` | `/player/equipment` | bearer | `200` | All five slots plus the aggregated bonuses |
+| `POST` | `/player/equipment/{slot}` | bearer | `200` | Equip `{ inventoryItemId }`, replacing the slot |
+| `DELETE` | `/player/equipment/{slot}` | bearer | `200` | Empty a slot; the item stays owned |
 
 Energy is exposed on `/player/profile` rather than through a separate endpoint,
 so the client needs one request to draw the meter and decide whether a mission
@@ -838,14 +1121,139 @@ screen: `MISSION COMPLETE` / `ACCESS DENIED` / `CONNECTION TIMEOUT`.
 | Code | Used for |
 | --- | --- |
 | `200` | Successful read or token operation, including a rejected answer |
-| `201` | Account created |
-| `400` | Validation failure, malformed JSON, energy too low, not started, inactive mission, **completing without solving the puzzle** |
+| `201` | Account created, **item purchased** |
+| `400` | Validation failure, malformed JSON, energy too low, not started, inactive mission/item, **not enough coins**, item does not fit the slot, unknown slot |
 | `401` | Missing/invalid/expired token, bad credentials |
 | `403` | Authenticated but below the mission's required level |
-| `404` | Unknown endpoint or resource, **including a puzzle that is not this player's or not this mission's** |
-| `409` | Duplicate username or email, mission already completed, **puzzle already submitted** |
+| `404` | Unknown endpoint or resource, **including a puzzle that is not this player's or not this mission's, or an inventory row belonging to someone else** |
+| `409` | Duplicate username or email, mission already completed, puzzle already submitted, **item already owned** |
 | `429` | Too many authentication attempts |
 | `500` | Unexpected error (details logged, never returned) |
+
+### `GET /api/v1/player/shop`
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id": "21111111-0000-4000-8000-000000000008",
+        "code": "NEURAL_PROCESSOR",
+        "name": "Neural Processor",
+        "description": "Predicts a lock before it resolves.",
+        "category": "PROCESSOR",
+        "rarity": "RARE",
+        "slot": "PROCESSOR",
+        "price": 750,
+        "owned": false,
+        "effects": [{ "type": "EXPERIENCE_BONUS", "value": 10 }]
+      }
+    ],
+    "coins": 1250
+  }
+}
+```
+
+Inactive items are excluded by the query, not by a display filter, so a retired
+item cannot leak through a sorting or paging bug. `coins` is included so the shop
+screen does not need a second round trip that could disagree with the prices on
+screen.
+
+### `POST /api/v1/player/shop/items/{itemId}/purchase`
+
+Request body: **none**. The response echoes the server's own arithmetic:
+
+```json
+{
+  "success": true,
+  "data": {
+    "inventoryId": "…",
+    "itemId": "21111111-0000-4000-8000-000000000008",
+    "code": "NEURAL_PROCESSOR",
+    "name": "Neural Processor",
+    "pricePaid": 750,
+    "coins": 500
+  },
+  "message": "Purchased NEURAL_PROCESSOR"
+}
+```
+
+`pricePaid` is read from `items.price`, never from the request. Rejections:
+
+| Situation | Status |
+| --- | --- |
+| No such item | `404` |
+| Item retired | `400` |
+| Already owned — nothing charged | `409` |
+| Not enough coins — nothing deducted | `400` |
+
+### `GET /api/v1/player/inventory`
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "inventoryId": "…",
+        "itemId": "21111111-0000-4000-8000-000000000008",
+        "code": "NEURAL_PROCESSOR",
+        "name": "Neural Processor",
+        "description": "…",
+        "category": "PROCESSOR",
+        "rarity": "RARE",
+        "slot": "PROCESSOR",
+        "quantity": 1,
+        "equipped": false,
+        "equippedIn": null,
+        "effects": [{ "type": "EXPERIENCE_BONUS", "value": 10 }]
+      }
+    ]
+  }
+}
+```
+
+`equipped` is derived from the loadout rather than stored on the inventory row, so
+the two can never disagree. `inventoryId` is the only value a client sends back,
+and the server verifies it belongs to the caller.
+
+### `GET /api/v1/player/equipment`
+
+Every slot is returned, including empty ones, in a fixed order:
+
+```json
+{
+  "success": true,
+  "data": {
+    "equipment": [
+      { "slot": "MAIN_DEVICE", "item": { "code": "BASIC_LAPTOP", "…": "…" } },
+      { "slot": "PROCESSOR", "item": null },
+      { "slot": "SECURITY", "item": null },
+      { "slot": "SOFTWARE", "item": null },
+      { "slot": "NETWORK", "item": null }
+    ],
+    "bonuses": [
+      { "type": "EXPERIENCE_BONUS", "percent": 10 },
+      { "type": "MISSION_SPEED", "percent": 5 }
+    ]
+  }
+}
+```
+
+`bonuses` are the **capped aggregates the server actually applies** to rewards and
+energy. A client that re-summed the item effects could disagree with the engine —
+and would be wrong whenever an item was capped.
+
+### `POST /api/v1/player/equipment/{slot}`
+
+```json
+{ "inventoryItemId": "…" }
+```
+
+That is the entire body. It cannot express a rarity, a bonus, a price or an
+ownership claim. An unknown slot name is rejected as a bad path variable before
+any service runs.
 
 ---
 
@@ -868,6 +1276,15 @@ screen: `MISSION COMPLETE` / `ACCESS DENIED` / `CONNECTION TIMEOUT`.
 | Logout | Revokes the refresh token server-side; not merely a client-side state wipe. |
 | Client-side role selection | Impossible — no `role` field exists in the registration request. |
 | Ownership | `/player/profile` takes no user id; the caller is resolved from the security context. |
+| Item price | Read from `items.price`. The purchase endpoint declares no request body, so no price, coin total or quantity can be supplied. |
+| Item rarity and effects | Read from `items` and `item_effects`. No endpoint writes either table, so there is no path by which a client can influence a bonus. |
+| Inventory ownership | Every query is keyed on the authenticated `userId`. Another player's `inventoryId` is not found, and the identical `404` is returned for a guessed id that exists nowhere. |
+| Equipped state | Written only by `EquipmentService`, which locks the profile row and verifies ownership and slot compatibility before writing. |
+| Duplicate purchase | `UNIQUE (user_id, item_id)` plus a check under the profile lock, so two simultaneous attempts cannot both succeed. Rejection charges nothing. |
+| Purchase atomicity | Coin deduction and inventory insert commit together or not at all, so a player is never charged for an item they did not receive. |
+| Bonus aggregation | Exactly one implementation, capped per effect type. No mechanic may add a percentage to a reward on its own. |
+| Deterministic payouts | Integer arithmetic with halves rounding up; no floating point in any reward or cost calculation. |
+| Starter item | Granted by a hard-coded code inside the registration transaction. A registration request cannot name or choose it. |
 | User enumeration | Unknown accounts and wrong passwords return an identical `401` message, and the unknown-account path still performs a hash comparison so timings match. |
 | Disabled accounts | Rejected at login, and any already-issued access token stops working immediately. |
 | Error leakage | Stack traces, SQL and JWT internals are logged server-side only. |
@@ -894,6 +1311,21 @@ MISSION BOARD  ──start──▶  PUZZLE SCREEN  ──submit──▶  RESUL
 | `components/puzzle.tsx` | `PuzzlePanel`, `PuzzleResultOverlay`, `EnergyMeter` |
 | `components/puzzleConstants.ts` | Type labels, outcome headlines, countdown formatting |
 | `components/missions.tsx` | Mission card, now labelled with its puzzle type |
+| `components/equipment.tsx` | `ShopItemCard`, `InventoryItemCard`, `LoadoutPanel`, `RarityBadge`, `EffectList`, `BonusChip` |
+| `components/equipmentConstants.ts` | Slot labels, effect labels, rarity colours. **No prices or bonuses** |
+
+Routes are `/dashboard`, `/missions`, `/shop`, `/inventory` and `/profile`, all
+inside the authenticated layout. Missions remain the primary action on the
+dashboard; the shop and inventory are reachable from the navigation and from the
+dashboard's gear panel.
+
+The frontend holds **no price table, no rarity list and no bonus arithmetic**.
+Rarity colours and slot labels are the only things it decides. Prices come from
+the catalogue response, affordability is a comparison of two server figures used
+only to disable a button, and the bonuses shown are the server's capped
+aggregates rather than a local sum. Nothing toggles equipped state locally
+either — the inventory re-reads after every action, so a rejected request cannot
+leave the screen claiming otherwise.
 
 The result screen shows rewards and level-ups on success, and never reveals the
 correct answer on failure. The energy meter renders `⚡ 82 / 100` with
@@ -920,6 +1352,7 @@ cyber-heist/
 │   │   │   ├── provider/  The five providers + shared PuzzleGeneratorSupport
 │   │   │   └── dto/       PuzzleChallengeView — the answer is dropped here
 │   │   ├── energy/        EnergyService, EnergySnapshot — lazy regeneration
+│   │   ├── shop/          Item catalogue, inventory, equipment, ShopController
 │   │   ├── reward/        RewardService — the single payout path
 │   │   ├── progression/   LevelCurve, ProgressionService, ProgressionResult
 │   │   ├── common/        ApiResponse, ApiErrorResponse, auditing base
@@ -927,20 +1360,22 @@ cyber-heist/
 │   ├── src/main/resources/
 │   │   ├── application.yml
 │   │   └── db/migration/  V1 core · V2 mission system · V3 seed · V4 puzzles + regen
-│   ├── src/test/          263 tests
+│   │                      · V5 inventory + equipment + shop
+│   ├── src/test/          332 tests
+│   ├── verify-live.ps1    Live HTTP verification of the whole Phase 4 flow
 │   ├── Dockerfile
 │   └── pom.xml
 ├── frontend/
 │   ├── src/
-│   │   ├── components/    UI primitives, MissionBoard, puzzle.tsx, EnergyMeter
-│   │   ├── pages/         Login, Register, Dashboard, Profile, 404
-│   │   ├── layouts/       Auth and dashboard shells
-│   │   ├── services/      apiClient, auth/user/player/mission services
+│   │   ├── components/    UI primitives, MissionBoard, puzzle.tsx, equipment.tsx
+│   │   ├── pages/         Login, Register, Dashboard, Missions, Shop, Inventory, Profile, 404
+│   │   ├── layouts/       Auth and dashboard shells (incl. main navigation)
+│   │   ├── services/      apiClient, auth/user/player/mission/shop/equipment services
 │   │   ├── context/       AuthContext (incl. transparent token refresh)
 │   │   ├── routes/        Route table and auth guards
 │   │   ├── types/         Shared TypeScript types
 │   │   ├── utils/         Client-side validation
-│   │   └── test/          Vitest suites — 75 tests
+│   │   └── test/          Vitest suites — 100 tests
 │   └── package.json
 ├── docker-compose.yml
 ├── .env.example
@@ -963,16 +1398,56 @@ no change. Add a contract test to `PuzzleProviderContractTest` and a provider
 test; the shared contract suite will check determinism and option validity for
 the new type for free.
 
+### Adding a new item, category, slot or effect
+
+1. Add the constant to `ItemCategory`, `ItemRarity`, `EquipmentSlot` or
+   `ItemEffectType`, and extend the matching CHECK constraint in a **new**
+   migration. Never edit V1–V5.
+2. Seed the item row, and its `item_effects` rows after it, so the foreign key can
+   be satisfied.
+3. Nothing else changes. The shop, inventory and loadout read the tables
+   generically, and `LoadoutService` iterates `EquipmentSlot.values()`.
+
+If the new effect type should modify a mechanic, apply it in
+`EquipmentBonusService` **and only there** — add a cap in the `switch`, then have
+the owning service read `bonusFor(userId, TYPE)`. Do not add a percentage in a
+second place, and do not read equipment from inside a puzzle provider.
+
+### Adding a Phase 4-style reward source
+
+Grant XP or coins through `RewardService.grant`, having first applied equipment
+with `RewardService.applyBonuses(base, bonusesFor(userId))`. That keeps the
+"base, then equipment, then final" rule in one implementation and means a new
+source gets equipment bonuses without any change of its own.
+
 ---
 
 ## Known limitations
 
 - **PostgreSQL has not been executed against a real instance.** The migrations
   ran through Flyway against H2 in PostgreSQL mode and use portable constructs,
-  but the local PostgreSQL 18 service requires `scram-sha-256` credentials that
-  were not available in this environment, and the Docker daemon was not running.
-  H2-in-PostgreSQL-mode is **not** PostgreSQL runtime verification. Before
-  deploying, run `mvn test` and the full HTTP flow against a real instance.
+  but a local PostgreSQL 18 server is listening on 5432 while requiring password
+  authentication for which no credentials were available, and the Docker daemon
+  had no `postgres` container. H2-in-PostgreSQL-mode is **not** PostgreSQL
+  runtime verification. Before deploying, run `mvn test` and the full HTTP flow
+  against a real instance.
+- `MISSION_SPEED` and `PUZZLE_BONUS` are defined, capped and surfaced but do not
+  yet change anything. Mission duration is advisory and puzzles are generated
+  from a seed, so there is no mechanic for them to influence yet. They will
+  appear in the UI as bonuses that are counted but not spent.
+- A player can own only one copy of each item, so equipment cannot be stacked
+  and there is nothing to upgrade. The `quantity` column and the
+  `UNIQUE (user_id, item_id)` constraint would both need revisiting if stacking
+  or consumables are ever introduced.
+- There is no selling, refunding or trading, so coins are a one-way sink. A
+  player who buys the wrong item keeps it.
+- The catalogue is seeded by migration and has no admin surface. Retiring an item
+  means a migration or a direct database edit; `items.active` exists and is
+  honoured everywhere, but nothing writes it at runtime.
+- Items cannot be traded or bound to an account permanently, and there is no
+  cooldown on re-equipping, which makes loadout swapping free.
+- The economy has been sanity-checked against mission rewards but not playtested
+  at scale; prices are plausible, not tuned by telemetry.
 - Every puzzle type is currently multiple-choice or short-answer with one fixed
   rule family. There is no adaptive difficulty, no hint system, and no scoring
   beyond the binary correct/incorrect that the mission reward depends on.

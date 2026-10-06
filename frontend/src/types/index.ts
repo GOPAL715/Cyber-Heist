@@ -241,3 +241,127 @@ export interface PuzzleSubmission {
   /** True when starting the mission again produces a new puzzle. */
   canRetry: boolean
 }
+// ---------------------------------------------------------------------------
+// Items, inventory and equipment (Phase 4)
+//
+// Every value below is decided by the server. The client renders what it is
+// told and never derives a price, a rarity or a bonus: those live in the
+// `items` and `item_effects` tables and reach the UI only through these DTOs.
+// ---------------------------------------------------------------------------
+
+/** Item categories, mirroring the backend `ItemCategory` enum. */
+export type ItemCategory = 'DEVICE' | 'PROCESSOR' | 'SECURITY' | 'SOFTWARE' | 'NETWORK'
+
+/** Item rarities, mirroring the backend `ItemRarity` enum. */
+export type ItemRarity = 'COMMON' | 'UNCOMMON' | 'RARE' | 'EPIC' | 'LEGENDARY'
+
+/**
+ * Equipment slots. Each slot holds at most one item, so a rarity or an effect
+ * can be presented against a fixed row of five without the UI inventing one.
+ */
+export type EquipmentSlot =
+  | 'MAIN_DEVICE'
+  | 'PROCESSOR'
+  | 'SECURITY'
+  | 'SOFTWARE'
+  | 'NETWORK'
+
+/** The bonus kinds an item can grant, mirroring the backend `ItemEffectType`. */
+export type ItemEffectType =
+  | 'MISSION_SPEED'
+  | 'EXPERIENCE_BONUS'
+  | 'COIN_BONUS'
+  | 'ENERGY_EFFICIENCY'
+  | 'PUZZLE_BONUS'
+
+/**
+ * One bonus on an item, as a percentage.
+ *
+ * <p>The value is the item's own contribution. The aggregate a player actually
+ * receives after caps is a separate figure the server computes in
+ * `EquipmentLoadout.bonuses`, and that is the one the game applies - the UI adds
+ * nothing up.
+ */
+export interface ItemEffect {
+  type: ItemEffectType
+  value: number
+}
+
+/** A shop item, priced and described entirely by the server. */
+export interface ShopItem {
+  id: string
+  code: string
+  name: string
+  description: string
+  category: ItemCategory
+  rarity: ItemRarity
+  /** The slot this item goes in, if it is equipment. */
+  slot: EquipmentSlot
+  /** Authoritative cost in coins. Never computed on the client. */
+  price: number
+  /** True when the caller already owns it, so it cannot be bought again. */
+  owned: boolean
+  effects: ItemEffect[]
+}
+
+/** The catalogue plus the caller's balance, returned by GET /player/shop. */
+export interface ShopCatalogue {
+  items: ShopItem[]
+  coins: number
+}
+
+/**
+ * The result of a purchase.
+ *
+ * <p>`pricePaid` and `coins` are echoed from the server's own arithmetic so the
+ * UI can confirm the charge rather than guessing at it.
+ */
+export interface PurchaseResult {
+  inventoryId: string
+  itemId: string
+  code: string
+  name: string
+  pricePaid: number
+  coins: number
+}
+
+/** An owned item, with its equipped state resolved server-side. */
+export interface InventoryItem {
+  /** Identifies the ownership row. This is what an equip request sends. */
+  inventoryId: string
+  itemId: string
+  code: string
+  name: string
+  description: string
+  category: ItemCategory
+  rarity: ItemRarity
+  slot: EquipmentSlot
+  quantity: number
+  equipped: boolean
+  /** The slot it occupies, or null when it is not equipped. */
+  equippedIn: EquipmentSlot | null
+  effects: ItemEffect[]
+}
+
+/** One slot of the loadout. `item` is null for an empty slot. */
+export interface EquipmentSlotView {
+  slot: EquipmentSlot
+  item: InventoryItem | null
+}
+
+/**
+ * An aggregate bonus after caps, as a percentage.
+ *
+ * <p>This is the figure the server applies to rewards and energy costs. Showing
+ * anything else would misreport what the player is actually earning.
+ */
+export interface ActiveBonus {
+  type: ItemEffectType
+  percent: number
+}
+
+/** The whole loadout, including empty slots and the active bonuses. */
+export interface EquipmentLoadout {
+  equipment: EquipmentSlotView[]
+  bonuses: ActiveBonus[]
+}

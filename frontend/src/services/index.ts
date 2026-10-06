@@ -2,15 +2,21 @@ import { request } from './apiClient'
 import type {
   AuthTokens,
   AuthUser,
+  EquipmentLoadout,
+  EquipmentSlot,
+  InventoryItem,
   LoginPayload,
   Mission,
   MissionCategory,
   MissionCompletion,
   MissionStart,
   PlayerProfile,
+  PurchaseResult,
   PuzzleChallenge,
   PuzzleSubmission,
   RegisterPayload,
+  ShopCatalogue,
+  ShopItem,
 } from '@/types'
 
 /** Registration, login, refresh and logout calls. */
@@ -60,6 +66,66 @@ export const userService = {
 export const playerService = {
   profile(token: string): Promise<PlayerProfile> {
     return request<PlayerProfile>('/api/v1/player/profile', { token })
+  },
+}
+
+/**
+ * Shop endpoints.
+ *
+ * <p>`purchase` is the clearest expression of the whole security model in the
+ * codebase: it takes an item id and nothing else. There is no price, quantity,
+ * rarity or bonus argument, so the client has no way to state what an item
+ * costs or what it should pay - those come from the catalogue row the server
+ * reads. Sending a body would not help either, since the endpoint declares none.
+ */
+export const shopService = {
+  catalogue(token: string): Promise<ShopCatalogue> {
+    return request<ShopCatalogue>('/api/v1/player/shop', { token })
+  },
+
+  item(token: string, itemId: string): Promise<ShopItem> {
+    return request<ShopItem>(`/api/v1/player/shop/items/${itemId}`, { token })
+  },
+
+  /** Buys an item at its server-defined price. */
+  purchase(token: string, itemId: string): Promise<PurchaseResult> {
+    return request<PurchaseResult>(`/api/v1/player/shop/items/${itemId}/purchase`, {
+      method: 'POST',
+      token,
+    })
+  },
+}
+
+/**
+ * Inventory and loadout endpoints.
+ *
+ * <p>Reading the inventory takes no argument beyond the token. Equipping sends
+ * one field: which ownership row to put in a slot, which the server checks
+ * belongs to the caller before it writes anything.
+ */
+export const equipmentService = {
+  inventory(token: string): Promise<{ items: InventoryItem[] }> {
+    return request<{ items: InventoryItem[] }>('/api/v1/player/inventory', { token })
+  },
+
+  loadout(token: string): Promise<EquipmentLoadout> {
+    return request<EquipmentLoadout>('/api/v1/player/equipment', { token })
+  },
+
+  equip(token: string, slot: EquipmentSlot, inventoryItemId: string): Promise<InventoryItem> {
+    return request<InventoryItem>(`/api/v1/player/equipment/${slot}`, {
+      method: 'POST',
+      token,
+      body: { inventoryItemId },
+    })
+  },
+
+  /** Empties a slot. The item stays in the inventory. */
+  unequip(token: string, slot: EquipmentSlot): Promise<void> {
+    return request<void>(`/api/v1/player/equipment/${slot}`, {
+      method: 'DELETE',
+      token,
+    })
   },
 }
 

@@ -2,6 +2,17 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '@/context/AuthContext'
 import { Button } from '@/components/ui'
 
+/**
+ * The in-game navigation, in the order a player uses them: missions to earn,
+ * then the shop and inventory to spend what was earned.
+ */
+const NAV_LINKS = [
+  { to: '/dashboard', label: 'Dashboard' },
+  { to: '/missions', label: 'Missions' },
+  { to: '/shop', label: 'Shop' },
+  { to: '/inventory', label: 'Inventory' },
+] as const
+
 /** Application shell shown around the dashboard. */
 export function DashboardLayout() {
   const { user, logout } = useAuth()
@@ -29,6 +40,27 @@ export function DashboardLayout() {
             </Button>
           </div>
         </div>
+
+        <nav aria-label="Main" className="mx-auto max-w-5xl px-4">
+          <ul className="flex gap-1 pb-2">
+            {NAV_LINKS.map((link) => (
+              <li key={link.to}>
+                <NavLink
+                  to={link.to}
+                  className={({ isActive }) =>
+                    `block rounded px-3 py-1.5 text-xs uppercase tracking-widest transition-colors ${
+                      isActive
+                        ? 'bg-neon/15 text-neon'
+                        : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+                    }`
+                  }
+                >
+                  {link.label}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        </nav>
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-8">
