@@ -4,6 +4,7 @@ import com.cyberheist.boss.dto.BossStageSubmission;
 import com.cyberheist.boss.dto.EncounterState;
 import com.cyberheist.bonus.PlayerBonusService;
 import com.cyberheist.energy.EnergyService;
+import com.cyberheist.game.PlayerMilestoneService;
 import com.cyberheist.exception.BossNotFoundException;
 import com.cyberheist.exception.BossPuzzleNotFoundException;
 import com.cyberheist.exception.BossUnavailableException;
@@ -15,7 +16,6 @@ import com.cyberheist.puzzle.PuzzleAttemptStatus;
 import com.cyberheist.puzzle.PuzzleService;
 import com.cyberheist.puzzle.dto.PuzzleChallengeView;
 import com.cyberheist.player.PlayerProfile;
-import com.cyberheist.progression.ProgressionResult;
 import com.cyberheist.reward.Reward;
 import com.cyberheist.reward.RewardService;
 import java.time.Clock;
@@ -76,6 +76,7 @@ public class BossEncounterService {
     private final RewardService rewardService;
     private final PlayerBonusService bonusService;
     private final EnergyService energyService;
+    private final PlayerMilestoneService milestoneService;
     private final Clock clock;
 
     @Autowired
@@ -86,9 +87,10 @@ public class BossEncounterService {
                                PuzzleService puzzleService,
                                RewardService rewardService,
                                PlayerBonusService bonusService,
-                               EnergyService energyService) {
+                               EnergyService energyService,
+                               PlayerMilestoneService milestoneService) {
         this(bosses, stages, encounters, puzzles, puzzleService, rewardService,
-                bonusService, energyService, Clock.systemUTC());
+                bonusService, energyService, milestoneService, Clock.systemUTC());
     }
 
     BossEncounterService(BossRepository bosses,
@@ -99,6 +101,7 @@ public class BossEncounterService {
                          RewardService rewardService,
                          PlayerBonusService bonusService,
                          EnergyService energyService,
+                         PlayerMilestoneService milestoneService,
                          Clock clock) {
         this.bosses = bosses;
         this.stages = stages;
@@ -108,6 +111,7 @@ public class BossEncounterService {
         this.rewardService = rewardService;
         this.bonusService = bonusService;
         this.energyService = energyService;
+        this.milestoneService = milestoneService;
         this.clock = clock;
     }
 
@@ -306,8 +310,15 @@ public class BossEncounterService {
         // `profile` is the row the caller already locked and refreshed, so the
         // reward lands on the current balance and the caller's transaction
         // commits it with everything else.
+        //
+        // The level is sampled before and after the whole method rather than taken
+        // from the boss reward's own ProgressionResult, because a Phase 7 milestone
+        // unlocked by this very win can add XP and cross a level boundary too.
+        // Reporting only the boss's contribution would understate what the player
+        // actually gained from defeating it.
+        int levelBefore = profile.getLevel();
         int skillPointsBefore = profile.getSkillPoints();
-        ProgressionResult progression = rewardService.grant(profile, finalReward);
+        rewardService.grant(profile, finalReward);
 
         encounter.damage(cleared.getDamageValue(), 0);
         encounter.win(finalReward.experience(), finalReward.coins(), now);
@@ -316,8 +327,16 @@ public class BossEncounterService {
 
         log.info("Player {} defeated boss {} (+{} xp, +{} coins, level {} -> {})",
                 encounter.getUserId(), boss.getCode(), finalReward.experience(),
-                finalReward.coins(), progression.levelBefore(), progression.levelAfter());
+                finalReward.coins(), levelBefore, profile.getLevel());
 
+        // Phase 7. Only the victory path reports anything: a defeat or an expiry
+        // earns no milestone, so there is deliberately no call on those branches.
+        // Runs inside the caller's transaction with the already-locked profile, so a
+        // milestone unlock and its payout commit with the win that caused them.
+        milestoneService.bossDefeated(encounter.getUserId(), profile,
+                finalReward.experience(), finalReward.coins());
+
+        int levelAfter = profile.getLevel();
         EncounterState state = describe(encounter, boss, null,
                 "BOSS DEFEATED. " + boss.getName() + " is down.");
         return new EncounterState(
@@ -328,8 +347,9 @@ public class BossEncounterService {
                 state.xpAwarded(), state.coinAwarded(), state.startedAt(), state.expiresAt(),
                 state.cooldownUntil(), state.outcomeMessage(),
                 new EncounterState.Rewards(finalReward.experience(), finalReward.coins()),
-                new EncounterState.Progression(progression.levelBefore(), progression.levelAfter(),
-                        progression.levelsGained(), profile.getSkillPoints() - skillPointsBefore));
+                new EncounterState.Progression(levelBefore, levelAfter,
+                        Math.max(0, levelAfter - levelBefore),
+                        profile.getSkillPoints() - skillPointsBefore));
     }
 
     // =====================================================================

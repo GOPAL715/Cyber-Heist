@@ -17,4 +17,13 @@ public interface PlayerEquipmentRepository extends JpaRepository<PlayerEquipment
     @Query("select e from PlayerEquipment e where e.userId = :userId and e.slot = :slot")
     Optional<PlayerEquipment> findByUserIdAndSlotForUpdate(@Param("userId") UUID userId,
                                                            @Param("slot") EquipmentSlot slot);
+
+    /**
+     * Filled slots, for the equipment milestones.
+     *
+     * <p>Added by Phase 7. Bounded above by the five slots in {@link EquipmentSlot},
+     * so {@code FULLY_LOADED} is asking for the whole set rather than an arbitrary
+     * number.
+     */
+    long countByUserId(UUID userId);
 }

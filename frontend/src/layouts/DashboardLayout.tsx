@@ -12,6 +12,8 @@ const NAV_LINKS = [
   { to: '/shop', label: 'Shop' },
   { to: '/skills', label: 'Skills' },
   { to: '/bosses', label: 'Bosses' },
+  { to: '/achievements', label: 'Achievements' },
+  { to: '/daily', label: 'Daily' },
   { to: '/inventory', label: 'Inventory' },
 ] as const
 

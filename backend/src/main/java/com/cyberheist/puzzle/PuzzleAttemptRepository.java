@@ -74,4 +74,32 @@ public interface PuzzleAttemptRepository extends JpaRepository<PuzzleAttempt, UU
     @Query("update PuzzleAttempt a set a.status = 'EXPIRED', a.submittedAt = :now "
             + "where a.bossEncounterId = :encounterId and a.status = 'ACTIVE'")
     int expireOpenBossPuzzles(@Param("encounterId") UUID encounterId, @Param("now") Instant now);
+
+    /**
+     * Puzzles this player has solved, in total, mission puzzles only.
+     *
+     * <p>Added by Phase 7. Two filters are load-bearing and both are easy to get
+     * wrong. The status must be {@code SUCCEEDED}, because a row exists for every
+     * attempt ever issued and counting them all would count abandoned puzzles as
+     * solves. And {@code missionId is not null} excludes boss phases, which share
+     * this table since Phase 6 and would otherwise be counted as mission puzzles -
+     * inflating a player's puzzle total by however many bosses they have fought.
+     */
+    @Query("select count(a) from PuzzleAttempt a where a.userId = :userId "
+            + "and a.status = 'SUCCEEDED' and a.missionId is not null")
+    long countSolvedMissionPuzzles(@Param("userId") UUID userId);
+
+    /** As above, narrowed to one puzzle family. */
+    @Query("select count(a) from PuzzleAttempt a where a.userId = :userId "
+            + "and a.status = 'SUCCEEDED' and a.missionId is not null "
+            + "and a.puzzleType = :puzzleType")
+    long countSolvedMissionPuzzlesOfType(@Param("userId") UUID userId,
+                                         @Param("puzzleType") PuzzleType puzzleType);
+
+    /** Puzzles solved since an instant, for a same-day daily objective. */
+    @Query("select count(a) from PuzzleAttempt a where a.userId = :userId "
+            + "and a.status = 'SUCCEEDED' and a.missionId is not null "
+            + "and a.submittedAt >= :since")
+    long countSolvedMissionPuzzlesSince(@Param("userId") UUID userId,
+                                        @Param("since") Instant since);
 }

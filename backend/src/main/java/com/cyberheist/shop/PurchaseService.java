@@ -4,6 +4,7 @@ import com.cyberheist.exception.AlreadyOwnedException;
 import com.cyberheist.exception.InsufficientCoinsException;
 import com.cyberheist.exception.ItemNotFoundException;
 import com.cyberheist.exception.ItemUnavailableException;
+import com.cyberheist.game.PlayerMilestoneService;
 import com.cyberheist.player.PlayerProfile;
 import com.cyberheist.player.PlayerProfileRepository;
 import com.cyberheist.shop.dto.PurchaseResponse;
@@ -45,13 +46,16 @@ public class PurchaseService {
     private final ItemRepository items;
     private final PlayerInventoryRepository inventory;
     private final PlayerProfileRepository profiles;
+    private final PlayerMilestoneService milestoneService;
 
     public PurchaseService(ItemRepository items,
                            PlayerInventoryRepository inventory,
-                           PlayerProfileRepository profiles) {
+                           PlayerProfileRepository profiles,
+                           PlayerMilestoneService milestoneService) {
         this.items = items;
         this.inventory = inventory;
         this.profiles = profiles;
+        this.milestoneService = milestoneService;
     }
 
     /**
@@ -101,6 +105,12 @@ public class PurchaseService {
 
         log.info("Player {} bought {} for {} coins (balance now {})",
                 userId, item.getCode(), price, profile.getCoins());
+
+        // Phase 7. Reports that an item was bought; the inventory row is already
+        // written above, so the collection milestones count this purchase rather than
+        // needing to be told about it. Inside this transaction, so an unlock and its
+        // payout commit with the purchase.
+        milestoneService.itemPurchased(userId, profile);
 
         return new PurchaseResponse(
                 granted.getId(),

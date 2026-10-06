@@ -29,6 +29,7 @@ import com.cyberheist.puzzle.dto.PuzzleChallengeView;
 import com.cyberheist.reward.Reward;
 import com.cyberheist.reward.RewardService;
 import com.cyberheist.bonus.PlayerBonusService;
+import com.cyberheist.game.PlayerMilestoneService;
 import com.cyberheist.shop.EquipmentBonusService;
 import com.cyberheist.shop.ItemEffectType;
 import org.slf4j.Logger;
@@ -78,6 +79,7 @@ public class MissionService {
     private final PuzzleService puzzleService;
     private final EnergyService energyService;
     private final PlayerBonusService playerBonusService;
+    private final PlayerMilestoneService milestoneService;
 
     private final Clock clock;
 
@@ -89,9 +91,11 @@ public class MissionService {
                           RewardService rewardService,
                           PuzzleService puzzleService,
                           EnergyService energyService,
-                          PlayerBonusService playerBonusService) {
+                          PlayerBonusService playerBonusService,
+                          PlayerMilestoneService milestoneService) {
         this(missionRepository, progressRepository, profileRepository, puzzleRepository,
-                rewardService, puzzleService, energyService, playerBonusService, Clock.systemUTC());
+                rewardService, puzzleService, energyService, playerBonusService,
+                milestoneService, Clock.systemUTC());
     }
 
     MissionService(MissionRepository missionRepository,
@@ -102,6 +106,7 @@ public class MissionService {
                    PuzzleService puzzleService,
                    EnergyService energyService,
                    PlayerBonusService playerBonusService,
+                   PlayerMilestoneService milestoneService,
                    Clock clock) {
         this.missionRepository = missionRepository;
         this.progressRepository = progressRepository;
@@ -111,6 +116,7 @@ public class MissionService {
         this.puzzleService = puzzleService;
         this.energyService = energyService;
         this.playerBonusService = playerBonusService;
+        this.milestoneService = milestoneService;
         this.clock = clock;
     }
 
@@ -379,6 +385,15 @@ public class MissionService {
         log.info("Player {} solved puzzle {} and completed mission {} (+{} xp, +{} coins, level {} -> {})",
                 userId, puzzleId, mission.getCode(), reward.experience(), reward.coins(),
                 progression.levelBefore(), progression.levelAfter());
+
+        // Phase 7. Reports that a mission was solved; it does not know or care that
+        // achievements, daily objectives or a streak exist. Called after the three
+        // writes above so the milestone evaluation reads the committed-so-far state,
+        // and inside this transaction so an unlock and its payout commit together with
+        // the completion that caused them. The final post-bonus amounts are passed
+        // rather than the mission's catalogue figures, so a bonus-inflated reward is
+        // credited into the daily totals as what it was actually worth.
+        milestoneService.missionSolved(userId, profile, reward.experience(), reward.coins());
 
         return PuzzleSubmissionResponse.solved(summary, puzzle.getPuzzleType(),
                 "Security bypassed.",

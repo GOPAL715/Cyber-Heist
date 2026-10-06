@@ -39,6 +39,17 @@ public class PlayerProfile extends AuditableEntity {
     @Column(name = "coins", nullable = false)
     private long coins;
 
+    /**
+     * Lifetime coins credited, which is not the same thing as the balance.
+     *
+     * <p>{@link #coins} falls when coins are spent, so it cannot answer a question
+     * about totals. Added by Phase 7 for the economy achievements and the
+     * {@code COINS_EARNED} daily requirement, and like every other balance field it
+     * has no public setter: {@link #addCoins} is the only writer.
+     */
+    @Column(name = "coins_earned", nullable = false)
+    private long coinsEarned;
+
     @Column(name = "energy", nullable = false)
     private int energy;
 
@@ -80,6 +91,7 @@ public class PlayerProfile extends AuditableEntity {
         this.energy = energy;
         this.lastEnergyUpdate = Instant.now();
         this.skillPoints = 0;
+        this.coinsEarned = 0;
     }
 
     public UUID getId() {
@@ -104,6 +116,16 @@ public class PlayerProfile extends AuditableEntity {
 
     public long getCoins() {
         return coins;
+    }
+
+    /**
+     * Coins ever credited, for the economy milestones.
+     *
+     * <p>Distinct from {@link #getCoins()}: this one never falls, so it stays
+     * meaningful after the balance has been spent down to nothing.
+     */
+    public long getCoinsEarned() {
+        return coinsEarned;
     }
 
     public int getEnergy() {
@@ -157,12 +179,23 @@ public class PlayerProfile extends AuditableEntity {
         return previousLevel;
     }
 
-    /** Credits coins. The only writer of the coin balance in Phase 2. */
+    /**
+     * Credits coins. The only writer of the coin balance in Phase 2.
+     *
+     * <p>Phase 7 adds the lifetime counter here rather than beside it, and that is
+     * deliberate: this method is already the single point through which every coin
+     * in the game arrives - missions, bosses, achievements, daily challenges and
+     * streak milestones alike all reach the profile through here. Crediting
+     * {@code coinsEarned} on the same line is what makes "how much has this player
+     * ever earned" exact rather than a reconstruction, and it cannot drift because
+     * there is no second path that pays coins.
+     */
     public void addCoins(long amount) {
         if (amount < 0) {
             throw new IllegalArgumentException("Coin award must not be negative");
         }
         this.coins += amount;
+        this.coinsEarned += amount;
     }
 
     /**

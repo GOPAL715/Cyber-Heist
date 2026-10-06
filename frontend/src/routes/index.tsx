@@ -4,6 +4,8 @@ import { DashboardLayout } from '@/layouts/DashboardLayout'
 import { BossBoardPage } from '@/pages/BossBoardPage'
 import { BossEncounterPage } from '@/pages/BossEncounterPage'
 import { DashboardPage } from '@/pages/DashboardPage'
+import { DailyPage } from '@/pages/DailyPage'
+import { AchievementsPage } from '@/pages/AchievementsPage'
 import { InventoryPage } from '@/pages/InventoryPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { MissionsPage } from '@/pages/MissionsPage'
@@ -19,36 +21,35 @@ import { ProtectedRoute, PublicOnlyRoute } from './guards'
  *
  * <p>Guest screens live under {@link PublicOnlyRoute} and the application under
  * {@link ProtectedRoute}, so redirect rules are declared once here instead of
- * being repeated in each page. Adding /shop and /inventory to the protected
- * block is what keeps an unauthenticated visitor out of the catalogue and out of
- * anyone's equipment.
+ * being repeated in each page.
  */
 export function AppRoutes() {
   return (
     <Routes>
       <Route element={<PublicOnlyRoute />}>
         <Route element={<AuthLayout />}>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
+          <Route path='/login' element={<LoginPage />} />
+          <Route path='/register' element={<RegisterPage />} />
         </Route>
       </Route>
 
       <Route element={<ProtectedRoute />}>
         <Route element={<DashboardLayout />}>
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/missions" element={<MissionsPage />} />
-          <Route path="/shop" element={<ShopPage />} />
-          <Route path="/skills" element={<SkillsPage />} />
-          <Route path="/bosses" element={<BossBoardPage />} />
-          {/* No conflict with /bosses: ranking is by specificity, not order. */}
-          <Route path="/bosses/encounter" element={<BossEncounterPage />} />
-          <Route path="/inventory" element={<InventoryPage />} />
-          <Route path="/profile" element={<ProfilePage />} />
+          <Route path='/dashboard' element={<DashboardPage />} />
+          <Route path='/missions' element={<MissionsPage />} />
+          <Route path='/shop' element={<ShopPage />} />
+          <Route path='/skills' element={<SkillsPage />} />
+          <Route path='/bosses' element={<BossBoardPage />} />
+          <Route path='/bosses/encounter' element={<BossEncounterPage />} />
+          <Route path='/inventory' element={<InventoryPage />} />
+          <Route path='/achievements' element={<AchievementsPage />} />
+          <Route path='/daily' element={<DailyPage />} />
+          <Route path='/profile' element={<ProfilePage />} />
         </Route>
       </Route>
 
-      <Route path="/" element={<NotFoundPage />} />
-      <Route path="*" element={<NotFoundPage />} />
+      <Route path='/' element={<NotFoundPage />} />
+      <Route path='*' element={<NotFoundPage />} />
     </Routes>
   )
 }

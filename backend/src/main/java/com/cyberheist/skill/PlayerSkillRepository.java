@@ -32,4 +32,23 @@ public interface PlayerSkillRepository extends JpaRepository<PlayerSkill, UUID> 
     @Query("select ps from PlayerSkill ps where ps.userId = :userId and ps.skillId = :skillId")
     Optional<PlayerSkill> findByUserIdAndSkillIdForUpdate(@Param("userId") UUID userId,
                                                           @Param("skillId") UUID skillId);
+
+    /**
+     * Skills this player has unlocked at all, for the skill milestones.
+     *
+     * <p>Added by Phase 7. Because a row only exists once level 1 is reached, this
+     * counts skills genuinely taken rather than skills merely present in the tree.
+     */
+    long countByUserId(UUID userId);
+
+    /**
+     * The highest level reached on any single skill, for the mastery milestones.
+     *
+     * <p>Added by Phase 7, and expressed as {@code max} rather than a sum on purpose:
+     * "take one skill to level 5" is about depth on a single branch of the tree, not
+     * about spreading points thinly. Returns {@code null} for a player who has
+     * unlocked nothing, which the caller reads as zero.
+     */
+    @Query("select max(ps.currentLevel) from PlayerSkill ps where ps.userId = :userId")
+    Integer findHighestSkillLevel(@Param("userId") UUID userId);
 }

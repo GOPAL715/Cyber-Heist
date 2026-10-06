@@ -47,6 +47,16 @@ public interface BossEncounterRepository extends JpaRepository<BossEncounter, UU
             + "and e.cooldownUntil is not null and e.cooldownUntil > :now "
             + "order by e.cooldownUntil desc")
     List<BossEncounter> findCooldowns(@Param("userId") UUID userId,
-                                       @Param("bossId") UUID bossId,
-                                       @Param("now") Instant now);
+                                      @Param("bossId") UUID bossId,
+                                      @Param("now") Instant now);
+
+    /**
+     * Bosses this player has defeated, for the boss milestones.
+     *
+     * <p>Added by Phase 7. Filtered on {@code VICTORY} explicitly rather than
+     * counting every encounter, so losses and expiries do not read as wins. A defeat
+     * genuinely is not progress here, and counting it would reward players for
+     * walking into a fight they cannot finish.
+     */
+    long countByUserIdAndStatus(UUID userId, EncounterStatus status);
 }

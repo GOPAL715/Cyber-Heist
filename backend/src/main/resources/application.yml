@@ -109,6 +109,19 @@ app:
     growth-multiplier: 1.5
     maximum-level: 100
 
+  # --------------------------------- game ---------------------------------
+  # Phase 7 settings. Everything time-based in achievements, daily challenges and
+  # streaks resolves through app.game.timezone, so "today" is the server's answer
+  # and never the browser's. Changing this moves the daily boundary for everyone
+  # at once rather than splitting players across two different days.
+  game:
+    timezone: ${GAME_TIMEZONE:UTC}
+    # Mixed into the daily seed. Rotating it re-cuts the whole daily rotation
+    # deterministically, without editing a row.
+    daily-seed-key: ${GAME_DAILY_SEED_KEY:cyber-heist}
+    challenges-per-day: 3
+    recent-achievement-limit: 10
+
 logging:
   level:
     root: INFO

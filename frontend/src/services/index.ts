@@ -24,6 +24,7 @@ import type {
   SkillTree,
   SkillUnlockResult,
 } from '@/types'
+import type { Achievement, DailyOverview } from '@/types/phase7'
 
 /** Registration, login, refresh and logout calls. */
 export const authService = {
@@ -269,6 +270,35 @@ export const missionService = {
    */
   complete(token: string, missionId: string): Promise<MissionCompletion> {
     return request<MissionCompletion>(`/api/v1/player/missions/${missionId}/complete`, {
+      method: 'POST',
+      token,
+    })
+  },
+}
+
+/** Milestone endpoints. */
+export const achievementService = {
+  list(token: string): Promise<Achievement[]> {
+    return request<Achievement[]>('/api/v1/player/achievements', { token })
+  },
+
+  detail(token: string, code: string): Promise<Achievement> {
+    return request<Achievement>(`/api/v1/player/achievements/${code}`, { token })
+  },
+
+  recent(token: string): Promise<Achievement[]> {
+    return request<Achievement[]>('/api/v1/player/achievements/recent', { token })
+  },
+}
+
+/** Daily challenge endpoints. */
+export const dailyService = {
+  today(token: string): Promise<DailyOverview> {
+    return request<DailyOverview>('/api/v1/player/daily', { token })
+  },
+
+  evaluate(token: string): Promise<DailyOverview> {
+    return request<DailyOverview>('/api/v1/player/daily/evaluate', {
       method: 'POST',
       token,
     })

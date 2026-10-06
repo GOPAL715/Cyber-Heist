@@ -1,6 +1,7 @@
 package com.cyberheist.skill;
 
 import com.cyberheist.bonus.PlayerBonusService;
+import com.cyberheist.game.PlayerMilestoneService;
 import com.cyberheist.exception.SkillNotFoundException;
 import com.cyberheist.exception.SkillUnavailableException;
 import com.cyberheist.player.PlayerProfile;
@@ -63,19 +64,22 @@ public class SkillTreeService {
     private final PlayerSkillRepository playerSkills;
     private final PlayerProfileRepository profiles;
     private final PlayerBonusService bonusService;
+    private final PlayerMilestoneService milestoneService;
 
     public SkillTreeService(SkillRepository skills,
                             SkillLevelRepository levels,
                             SkillPrerequisiteRepository prerequisites,
                             PlayerSkillRepository playerSkills,
                             PlayerProfileRepository profiles,
-                            PlayerBonusService bonusService) {
+                            PlayerBonusService bonusService,
+                            PlayerMilestoneService milestoneService) {
         this.skills = skills;
         this.levels = levels;
         this.prerequisites = prerequisites;
         this.playerSkills = playerSkills;
         this.profiles = profiles;
         this.bonusService = bonusService;
+        this.milestoneService = milestoneService;
 
         validateGraphAtStartup();
     }
@@ -292,6 +296,11 @@ public class SkillTreeService {
         log.info("Player {} took {} to level {}/{} for {} point(s), {} remaining",
                 userId, skill.getCode(), targetLevel, skill.getMaxLevel(),
                 next.getSkillPointCost(), profile.getSkillPoints());
+
+        // Phase 7. Reports that a skill was upgraded, after the player_skills row is
+        // written so the skill milestones measure the new level. Inside this
+        // transaction, so an unlock and its payout commit with the upgrade.
+        milestoneService.skillUpgraded(userId, profile);
 
         return new SkillUnlockResponse(
                 skill.getId(),

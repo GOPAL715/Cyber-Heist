@@ -26,5 +26,26 @@ public interface MissionProgressRepository extends JpaRepository<MissionProgress
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from MissionProgress p where p.userId = :userId and p.missionId = :missionId")
     Optional<MissionProgress> findByUserIdAndMissionIdForUpdate(@Param("userId") UUID userId,
-                                                               @Param("missionId") UUID missionId);
+                                                              @Param("missionId") UUID missionId);
+
+    /**
+     * Missions this player has finished, in total.
+     *
+     * <p>Added by Phase 7 to derive the mission milestones. Counting
+     * {@code COMPLETED} rows is counting <em>distinct</em> missions, because the
+     * table holds at most one row per (player, mission): replaying a mission to farm
+     * a counter is not possible, which is exactly what a derived count buys over an
+     * incremented one.
+     */
+    long countByUserIdAndStatus(UUID userId, MissionStatus status);
+
+    /**
+     * Missions finished since an instant, for a same-day daily objective.
+     *
+     * <p>Half-open on the caller's side: pass the business day's start.
+     */
+    @Query("select count(p) from MissionProgress p where p.userId = :userId "
+            + "and p.status = 'COMPLETED' and p.completedAt >= :since")
+    long countCompletedSince(@Param("userId") UUID userId,
+                             @Param("since") java.time.Instant since);
 }

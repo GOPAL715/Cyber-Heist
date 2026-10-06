@@ -3,6 +3,8 @@ package com.cyberheist.shop;
 import com.cyberheist.exception.EquipmentException;
 import com.cyberheist.exception.ItemNotFoundException;
 import com.cyberheist.exception.ItemUnavailableException;
+import com.cyberheist.game.PlayerMilestoneService;
+import com.cyberheist.player.PlayerProfile;
 import com.cyberheist.player.PlayerProfileRepository;
 import com.cyberheist.shop.dto.InventoryItemResponse;
 import com.cyberheist.shop.dto.InventoryListResponse;
@@ -40,6 +42,7 @@ public class EquipmentService {
     private final PlayerEquipmentRepository equipment;
     private final InventoryService inventoryService;
     private final PlayerProfileRepository profiles;
+    private final PlayerMilestoneService milestoneService;
     private final Clock clock;
 
     @Autowired
@@ -47,8 +50,10 @@ public class EquipmentService {
                             ItemRepository items,
                             PlayerEquipmentRepository equipment,
                             InventoryService inventoryService,
-                            PlayerProfileRepository profiles) {
-        this(inventory, items, equipment, inventoryService, profiles, Clock.systemUTC());
+                            PlayerProfileRepository profiles,
+                            PlayerMilestoneService milestoneService) {
+        this(inventory, items, equipment, inventoryService, profiles, milestoneService,
+                Clock.systemUTC());
     }
 
     EquipmentService(PlayerInventoryRepository inventory,
@@ -56,12 +61,14 @@ public class EquipmentService {
                      PlayerEquipmentRepository equipment,
                      InventoryService inventoryService,
                      PlayerProfileRepository profiles,
+                     PlayerMilestoneService milestoneService,
                      Clock clock) {
         this.inventory = inventory;
         this.items = items;
         this.equipment = equipment;
         this.inventoryService = inventoryService;
         this.profiles = profiles;
+        this.milestoneService = milestoneService;
         this.clock = clock;
     }
 
@@ -82,7 +89,7 @@ public class EquipmentService {
     @Transactional
     public InventoryItemResponse equip(UUID userId, EquipmentSlot slot, UUID inventoryItemId) {
         // Lock 1: the profile. Serialises every loadout change for this player.
-        profiles.findByUserIdForUpdate(userId).orElseThrow(() ->
+        PlayerProfile profile = profiles.findByUserIdForUpdate(userId).orElseThrow(() ->
                 new ItemNotFoundException("Player profile not found"));
 
         // Locked by id *and* owner, so another player's inventory row is simply
@@ -110,6 +117,12 @@ public class EquipmentService {
             equipment.save(existing);
         }
 
+        // Phase 7. Reports that the loadout changed, after the row is written so the
+        // equipment milestones measure the real slot count. Unequip reports too,
+        // because FULLY_LOADED depends on the current total and a player who empties
+        // a slot should see the milestones reflect that.
+        milestoneService.equipmentChanged(userId, profile);
+
         return viewOf(userId, owned.getId());
     }
 
@@ -125,10 +138,13 @@ public class EquipmentService {
      */
     @Transactional
     public void unequip(UUID userId, EquipmentSlot slot) {
-        profiles.findByUserIdForUpdate(userId).orElseThrow(() ->
+        PlayerProfile profile = profiles.findByUserIdForUpdate(userId).orElseThrow(() ->
                 new ItemNotFoundException("Player profile not found"));
 
         equipment.findByUserIdAndSlot(userId, slot).ifPresent(equipment::delete);
+
+        // Phase 7, same reasoning as equip.
+        milestoneService.equipmentChanged(userId, profile);
     }
 
     /** Renders one owned item through the inventory projection. */

@@ -7,7 +7,8 @@ A cyberpunk-themed browser game.
 - **Phase 3** — the puzzle engine and passive energy regeneration.
 - **Phase 4** — the item catalogue, shop, inventory and equipment.
 - **Phase 5** — the skill tree and player abilities.
-- **Phase 6 (current)** — the boss catalogue and multi-stage encounters.
+- **Phase 6** — the boss catalogue and multi-stage encounters.
+- **Phase 7 (current)** — achievements, daily challenges and login/activity streaks.
 
 Implemented gameplay loop:
 
@@ -21,9 +22,15 @@ And, once a player passes a boss's level gate:
 > server reads the phase's damage and moves the boss's integrity →
 > win and be paid, or lose everything and cool down
 
-Achievements, leaderboards, multiplayer, PvP, AI-generated content and payments are
-**out of scope** and are not implemented. The schema and code are laid out so those
-systems can be added later without a redesign.
+And, every action feeds the milestone system:
+
+> Play → make progress → **unlock achievement / complete daily** → receive
+> reward → continue progress
+
+Leaderboards, friends, social feeds, multiplayer, PvP, AI-generated content,
+consumables, item sets, payments and microtransactions are **out of scope**
+and are not implemented. The schema and code are laid out so those systems can
+be added later without a redesign.
 
 ---
 
@@ -578,6 +585,40 @@ required exactly one schema change: `mission_id` became nullable and
 `boss_encounter_id` was added, with a `CHECK` requiring precisely one of the two to
 be set. A puzzle attempt belongs to a mission or to a boss phase and to nothing
 else, which the database enforces. `MissionService` was made null-safe as a result.
+
+---
+
+## Achievements, daily challenges and streaks
+
+Phase 7 adds the milestone and retention layer on top of everything before it.
+Nothing about how missions pay, how puzzles grade or how bosses fight changes;
+this phase only *observes* those events, measures what they did, and pays its own
+rewards through the same `RewardService` / `ProgressionService` /
+`PlayerBonusService` pipeline every other system uses.
+
+```text
+PLAY → MAKE PROGRESS → UNLOCK ACHIEVEMENT / COMPLETE DAILY → RECEIVE REWARD → CONTINUE PROGRESS
+```
+
+### The one rule
+
+The frontend never decides whether an achievement was earned, what a challenge's
+progress is, what a streak counts or what anything pays. The backend is
+authoritative for the catalogue, the requirement, the measured progress, the
+unlock state and the reward. There is no request shape anywhere in this phase
+that states progress, a streak count, a last-activity date or a reward amount.
+
+### Achievement catalogue — `achievements`
+
+Thirty permanent milestones, one row each. Requirement types are a closed set
+of VARCHAR codes with CHECK constraints, not executable expressions.
+
+### Achievement progress is derived, never incremented
+
+`AchievementService` re-measures every counter from the tables that already
+record what happened — mission progress, puzzle attempts, inventory, equipment,
+skills, boss encounters — each time achievements are evaluated. Nothing
+accumulates, so a retried request cannot inflate a count.
 
 ---
 

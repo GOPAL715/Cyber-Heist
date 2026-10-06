@@ -18,5 +18,14 @@ public interface PlayerInventoryRepository extends JpaRepository<PlayerInventory
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select i from PlayerInventoryItem i where i.userId = :userId and i.itemId = :itemId")
     Optional<PlayerInventoryItem> findByUserIdAndItemIdForUpdate(@Param("userId") UUID userId,
-                                                                 @Param("itemId") UUID itemId);
+                                                                @Param("itemId") UUID itemId);
+
+    /**
+     * Distinct items this player owns, for the collection milestones.
+     *
+     * <p>Added by Phase 7. A row count is a distinct-item count here, because the
+     * table allows one row per (player, item): there is no quantity to multiply out
+     * and no way to farm this count by buying and returning an item.
+     */
+    long countByUserId(UUID userId);
 }

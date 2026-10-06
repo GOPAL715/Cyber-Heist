@@ -109,7 +109,8 @@ const openBoss: {
 
 /**
  * Mocks the calls the dashboard makes in order: session restore, then the
- * profile, loadout and boss list fetched together, then the mission board list.
+ * profile, loadout, boss list and achievements fetched together, then the
+ * mission board list.
  */
 function mockDashboardRequests(overrides: {
   profile?: PlayerProfile
@@ -128,6 +129,9 @@ function mockDashboardRequests(overrides: {
     )
     .mockResolvedValueOnce(
       jsonResponse({ success: true, data: overrides.bosses ?? [openBoss] }),
+    )
+    .mockResolvedValueOnce(
+      jsonResponse({ success: true, data: [] }),
     )
     .mockResolvedValueOnce(
       jsonResponse({
@@ -244,6 +248,8 @@ describe('DashboardPage', () => {
       .mockResolvedValueOnce(jsonResponse({ success: true, data: loadout }))
       // Boss list, for the dashboard's next-boss pointer.
       .mockResolvedValueOnce(jsonResponse({ success: true, data: [openBoss] }))
+      // Achievements, for the dashboard's milestone summary.
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: [] }))
       // Mission board list.
       .mockResolvedValueOnce(jsonResponse({ success: true, data: [availableMission] }))
 
@@ -260,6 +266,7 @@ describe('DashboardPage', () => {
         expect.stringContaining('/api/v1/player/profile'),
         expect.stringContaining('/api/v1/player/equipment'),
         expect.stringContaining('/api/v1/player/bosses'),
+        expect.stringContaining('/api/v1/player/achievements'),
         expect.stringContaining('/api/v1/player/missions'),
       ]),
     )
