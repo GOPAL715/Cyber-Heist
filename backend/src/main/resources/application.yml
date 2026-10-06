@@ -90,6 +90,17 @@ app:
     initial-energy: 100
     experience-per-level: 100
 
+  # ------------------------------- energy ---------------------------------
+  # Passive, server-authoritative regeneration. Computed lazily from
+  # player_profiles.last_energy_update: floor(elapsed / interval) * amount,
+  # capped at maximum. No background job; the server clock is the only input.
+  energy:
+    maximum: 100
+    regeneration:
+      enabled: ${ENERGY_REGEN_ENABLED:true}
+      amount: ${ENERGY_REGEN_AMOUNT:1}
+      interval-minutes: ${ENERGY_REGEN_INTERVAL_MINUTES:5}
+
   # ----------------------------- progression ------------------------------
   # Level curve: requiredXp(level) = round(baseExperience * growthMultiplier^(level-1))
   # XP is cumulative and never resets on level up.

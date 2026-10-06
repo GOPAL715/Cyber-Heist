@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, FullPageLoader } from '@/components/ui'
 import { ComingSoon, ProgressBar, StatCard } from '@/components/game'
+import { EnergyMeter } from '@/components/puzzle'
 import { MissionBoard } from '@/components/MissionBoard'
 import { useAuth } from '@/context/AuthContext'
 import { ApiError } from '@/services/apiClient'
@@ -88,7 +89,14 @@ export function DashboardPage() {
 
         <div className="grid gap-4 sm:grid-cols-2">
           <StatCard icon="💰" label="Coins" value={profile.coins} accent="amber" />
-          <StatCard icon="⚡" label="Energy" value={profile.energy} accent="neon" />
+          <EnergyMeter
+            energy={profile.energy}
+            maximum={profile.energyMaximum}
+            regenerationEnabled={profile.energyRegenerationEnabled}
+            regenerationAmount={profile.energyRegenerationAmount}
+            regenerationIntervalSeconds={profile.energyRegenerationIntervalSeconds}
+            nextRegenerationAt={profile.nextEnergyAt}
+          />
         </div>
       </section>
 
@@ -97,10 +105,6 @@ export function DashboardPage() {
 
       <section className="space-y-4">
         <h3 className="text-xs uppercase tracking-[0.3em] text-slate-500">Next up</h3>
-        <ComingSoon
-          title="Puzzle engine — coming soon"
-          description="Interactive contracts powered by each mission category."
-        />
         <ComingSoon
           title="Upgrades & skill tree — coming soon"
           description="Spend your coins on gear and unlock new capabilities."

@@ -5,6 +5,9 @@ import com.cyberheist.mission.MissionProgressRepository;
 import com.cyberheist.mission.MissionRepository;
 import com.cyberheist.player.PlayerProfile;
 import com.cyberheist.player.PlayerProfileRepository;
+import com.cyberheist.puzzle.PuzzleAttempt;
+import com.cyberheist.puzzle.PuzzleAttemptRepository;
+import com.cyberheist.puzzle.PuzzleService;
 import com.cyberheist.user.Role;
 import com.cyberheist.user.User;
 import com.cyberheist.user.UserRepository;
@@ -21,10 +24,13 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
+import java.util.List;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * Shared plumbing for the integration tests: a booted application context, a
@@ -57,6 +63,21 @@ public abstract class IntegrationTestSupport {
 
     @Autowired
     protected MissionProgressRepository progressRepository;
+
+    @Autowired
+    protected PuzzleAttemptRepository puzzleRepository;
+
+    /**
+     * The puzzle engine itself.
+     *
+     * <p>Tests use it the way the server does - re-deriving an answer from the
+     * stored seed - so a test that wants to succeed has to go through exactly
+     * the validation path a player's correct answer takes. Nothing here reaches
+     * into the database to learn the answer, because nothing can: it is not
+     * stored.
+     */
+    @Autowired
+    protected PuzzleService puzzleService;
 
     @Autowired
     protected com.cyberheist.progression.LevelCurve levelCurve;
@@ -151,6 +172,154 @@ public abstract class IntegrationTestSupport {
         return userRepository.saveAndFlush(user);
     }
 
+    // ---------------------------------------------------------------------
+    // Puzzle helpers
+    //
+    // Phase 3 made the puzzle, not the completion endpoint, the thing that
+    // finishes a mission. Tests that care about rewards or progression now
+    // drive the real loop - start, derive the answer server-side, submit -
+    // rather than asserting against an endpoint that can no longer pay out.
+    // ---------------------------------------------------------------------
+
+    /** Starts a mission and returns the full start response, puzzle included. */
+    protected JsonNode startMission(String token, String missionCode) throws Exception {
+        UUID id = missionId(missionCode);
+        MvcResult result = mockMvc.perform(authPost("/api/v1/player/missions/" + id + "/start", token))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+    }
+
+    /** The puzzle most recently generated for a player on a mission. */
+    protected PuzzleAttempt latestPuzzle(String email, UUID missionId) {
+        UUID userId = userRepository.findByEmailIgnoreCase(email).orElseThrow().getId();
+        List<PuzzleAttempt> history =
+                puzzleRepository.findByUserIdAndMissionIdOrderByAttemptNumberAsc(userId, missionId);
+        assertThat(history).as("a puzzle should have been generated").isNotEmpty();
+        return history.get(history.size() - 1);
+    }
+
+    /**
+     * The answer the server expects, re-derived from the stored seed.
+     *
+     * <p>This is the test equivalent of a player who solves the puzzle. It uses
+     * the same {@code PuzzleService} path the submission endpoint uses, so a
+     * provider that stopped being deterministic would fail here rather than
+     * quietly passing with a stale answer.
+     */
+    protected String correctAnswerFor(PuzzleAttempt puzzle) {
+        return puzzleService.regenerate(puzzle.getPuzzleType(), puzzle.getDifficulty(), puzzle.getSeed())
+                .challenge()
+                .expectedAnswer();
+    }
+
+    /** Submits an answer through the real endpoint and returns the parsed body. */
+    protected JsonNode submitPuzzle(String token, UUID missionId, UUID puzzleId, String answer)
+            throws Exception {
+        MvcResult result = mockMvc.perform(
+                        authPost("/api/v1/player/missions/" + missionId + "/puzzle/submit", token)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(objectMapper.writeValueAsString(new PuzzlePayload(puzzleId, answer))))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+    }
+
+    /**
+     * Plays a mission to completion: start if needed, then answer the live
+     * puzzle correctly.
+     *
+     * <p>Used by tests whose subject is rewards, progression or ownership rather
+     * than the puzzle itself.
+     *
+     * @return the submission response body
+     */
+    protected JsonNode completeMissionThroughPuzzle(String token, UUID missionId, String email)
+            throws Exception {
+        var progress = progressRepository
+                .findByUserIdAndMissionId(userIdOf(email), missionId).orElse(null);
+        if (progress == null || progress.getStatus() != com.cyberheist.mission.MissionStatus.IN_PROGRESS) {
+            mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/start", token))
+                    .andExpect(status().isOk());
+        }
+        PuzzleAttempt puzzle = latestPuzzle(email, missionId);
+        return submitPuzzle(token, missionId, puzzle.getPuzzleId(), correctAnswerFor(puzzle));
+    }
+
+    /** Convenience overload that resolves the mission by its catalogue code. */
+    protected JsonNode completeMissionThroughPuzzle(String token, String missionCode, String email)
+            throws Exception {
+        return completeMissionThroughPuzzle(token, missionId(missionCode), email);
+    }
+
+    /**
+     * Places a live puzzle's window in the past.
+     *
+     * <p>The puzzle keeps its ACTIVE state, so a later submission takes the
+     * expiry branch rather than the already-answered branch - which is the point,
+     * since only the first proves that the server's clock decides.
+     */
+    protected void expirePuzzleWindow(java.util.UUID puzzleId) {
+        java.time.Instant started = java.time.Instant.now().minus(java.time.Duration.ofMinutes(10));
+        assertThat(puzzleRepository.rewindow(puzzleId, started, started.plusSeconds(60)))
+                .as("the puzzle row should have been re-windowed")
+                .isEqualTo(1);
+    }
+
+    protected UUID userIdOf(String email) {
+        return userRepository.findByEmailIgnoreCase(email).orElseThrow().getId();
+    }
+
+    /**
+     * Simulates offline time by moving a profile's energy clock into the past.
+     *
+     * <p>The amount is added to whatever the clock already reads, so successive
+     * calls accumulate the way real elapsed time would. Setting it relative to
+     * "now" every time would quietly discard the previous advance, and a test
+     * written against that would pass while the feature was broken.
+     */
+    protected void advanceEnergyClock(String email, java.time.Duration elapsed) {
+        PlayerProfile profile = profileOf(email);
+        java.time.Instant current = profile.getLastEnergyUpdate();
+        profile.setLastEnergyUpdate(
+                (current == null ? java.time.Instant.now() : current).minus(elapsed));
+        profileRepository.saveAndFlush(profile);
+    }
+
+    /**
+     * Sets a player's energy balance directly.
+     *
+     * <p>{@link PlayerProfile} deliberately exposes no setter for energy,
+     * because production code must go through {@code spendEnergy} and the
+     * regeneration service. A test needs to set up a balance, though, and would
+     * otherwise have to spend down to zero and play for hours to get there - so
+     * it writes the field reflectively rather than opening a hole in the entity.
+     */
+    protected void setEnergy(String email, int energy) {
+        PlayerProfile profile = profileOf(email);
+        try {
+            java.lang.reflect.Field field = PlayerProfile.class.getDeclaredField("energy");
+            field.setAccessible(true);
+            field.set(profile, energy);
+            profileRepository.saveAndFlush(profile);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Unable to set the energy balance in a test", ex);
+        }
+        assertThat(profileOf(email).getEnergy()).isEqualTo(energy);
+    }
+
+    /**
+     * Grants XP so a level-gated mission becomes startable.
+     *
+     * <p>Used only where the case under test needs a mission at a given tier;
+     * level gating itself is covered by the Phase 2 progression tests.
+     */
+    protected void grantExperience(String email, long xp) {
+        PlayerProfile profile = profileOf(email);
+        profile.addExperience(xp, levelCurve);
+        profileRepository.saveAndFlush(profile);
+    }
+
     /** Request body for {@code /auth/register}. */
     public record RegistrationPayload(String username, String email, String password) {
     }
@@ -161,5 +330,9 @@ public abstract class IntegrationTestSupport {
 
     /** Request body for {@code /auth/refresh} and {@code /auth/logout}. */
     public record RefreshPayload(String refreshToken) {
+    }
+
+    /** Request body for {@code /missions/{id}/puzzle/submit}. */
+    public record PuzzlePayload(java.util.UUID puzzleId, String answer) {
     }
 }

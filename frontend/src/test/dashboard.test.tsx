@@ -4,7 +4,14 @@ import { DashboardPage } from '@/pages/DashboardPage'
 import { saveSession } from '@/services/sessionStorage'
 import { jsonResponse, renderWithProviders, tokens } from './helpers'
 import type { Mission, PlayerProfile } from '@/types'
+import { mission } from './missionFixtures'
 
+/**
+ * The profile as the backend now sends it.
+ *
+ * <p>Energy arrives with the regeneration policy attached, so the header can
+ * show the balance and the rate without hardcoding either number.
+ */
 const profile: PlayerProfile = {
   id: '22222222-2222-2222-2222-222222222222',
   username: 'shadow',
@@ -15,27 +22,15 @@ const profile: PlayerProfile = {
   xpForNextLevel: 100,
   coins: 100,
   energy: 100,
+  energyMaximum: 100,
+  energyRegenerationEnabled: true,
+  energyRegenerationAmount: 1,
+  energyRegenerationIntervalSeconds: 300,
+  nextEnergyAt: new Date(Date.now() + 120_000).toISOString(),
 }
 
 /** A mission the player can act on right away. */
-const availableMission: Mission = {
-  id: '33333333-3333-4333-8333-333333333333',
-  code: 'RECON_PERIMETER',
-  title: 'Scan the Perimeter',
-  description: 'Sweep the outer ring of the target building.',
-  category: 'RECON',
-  difficulty: 'EASY',
-  requiredLevel: 1,
-  xpReward: 50,
-  coinReward: 25,
-  energyCost: 10,
-  estimatedDurationSeconds: 180,
-  status: 'NOT_STARTED',
-  locked: false,
-  lockReason: null,
-  startable: true,
-  blockedReason: null,
-}
+const availableMission: Mission = mission()
 
 /**
  * Mocks the calls the dashboard makes in order: session restore, profile, and
@@ -80,13 +75,18 @@ describe('DashboardPage', () => {
     renderWithProviders(<DashboardPage />)
 
     expect(await screen.findByText(/welcome back/i)).toBeInTheDocument()
-    // Exact matches avoid colliding with the "coming soon" copy below.
     expect(screen.getByText('shadow')).toBeInTheDocument()
     expect(screen.getByText('Coins')).toBeInTheDocument()
-    expect(screen.getByText('Energy')).toBeInTheDocument()
     expect(screen.getByText('Level')).toBeInTheDocument()
-    // Coins and Energy are both 100, so assert the pair explicitly.
-    expect(screen.getAllByText('100')).toHaveLength(2)
+    expect(screen.getByText('Coins')).toBeInTheDocument()
+
+    // Energy is shown as a balance against the cap, with the regeneration rate
+    // read from the server rather than hardcoded.
+    const meter = screen.getByRole('progressbar', { name: 'Energy remaining' })
+    expect(meter).toHaveAttribute('aria-valuenow', '100')
+    expect(meter).toHaveAttribute('aria-valuemax', '100')
+    expect(screen.getByText(/⚡ 100 \/ 100/)).toBeInTheDocument()
+    expect(screen.getByText(/\+1 every 5 min/)).toBeInTheDocument()
     expect(screen.getByText('0 / 100')).toBeInTheDocument()
   })
 
@@ -103,6 +103,40 @@ describe('DashboardPage', () => {
     expect(screen.getByText('+50')).toBeInTheDocument()
     expect(screen.getByText('+25')).toBeInTheDocument()
     expect(screen.getByText('-10')).toBeInTheDocument()
+  })
+
+  it('warns when the player is out of energy', async () => {
+    signIn()
+    mockDashboardRequests({
+      profile: {
+        ...profile,
+        energy: 0,
+        nextEnergyAt: new Date(Date.now() + 180_000).toISOString(),
+      },
+    })
+
+    renderWithProviders(<DashboardPage />)
+
+    expect(await screen.findByText(/⚡ 0 \/ 100/)).toBeInTheDocument()
+    expect(screen.getByText(/not enough energy to start a mission/i)).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Energy remaining' })).toHaveAttribute(
+      'aria-valuenow',
+      '0',
+    )
+  })
+
+  it('says so plainly when regeneration is switched off', async () => {
+    signIn()
+    mockDashboardRequests({
+      profile: { ...profile, energyRegenerationEnabled: false, nextEnergyAt: null },
+    })
+
+    renderWithProviders(<DashboardPage />)
+
+    expect(
+      await screen.findByText(/regeneration is switched off/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/\+1 every/i)).not.toBeInTheDocument()
   })
 
   it('refreshes the access token when the profile call is unauthorised', async () => {
@@ -156,10 +190,9 @@ describe('DashboardPage', () => {
 
     renderWithProviders(<DashboardPage />)
 
-    // The mission placeholder is gone: the board is real now.
     expect(await screen.findByText('Scan the Perimeter')).toBeInTheDocument()
-    expect(screen.queryByText(/mission system/i)).not.toBeInTheDocument()
-    expect(screen.getByText(/puzzle engine/i)).toBeInTheDocument()
+    // The puzzle engine is built now, so its placeholder is gone.
+    expect(screen.queryByText(/puzzle engine/i)).not.toBeInTheDocument()
     expect(screen.getByText(/upgrades & skill tree/i)).toBeInTheDocument()
   })
 })

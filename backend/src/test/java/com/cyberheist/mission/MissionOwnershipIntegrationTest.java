@@ -26,8 +26,7 @@ class MissionOwnershipIntegrationTest extends IntegrationTestSupport {
         // The victim starts and completes the mission.
         mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/start", victimToken))
                 .andExpect(status().isOk());
-        mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/complete", victimToken))
-                .andExpect(status().isOk());
+        completeMissionThroughPuzzle(victimToken, missionId, "ownervictim@example.com");
 
         // The attacker's own view of the same mission is untouched.
         mockMvc.perform(authGet("/api/v1/player/missions/" + missionId, attackerToken))
@@ -65,8 +64,7 @@ class MissionOwnershipIntegrationTest extends IntegrationTestSupport {
 
         mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/start", victimToken))
                 .andExpect(status().isOk());
-        mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/complete", victimToken))
-                .andExpect(status().isOk());
+        completeMissionThroughPuzzle(victimToken, missionId, "paramvictim@example.com");
 
         // The attacker tries to read the victim's mission by passing their id.
         mockMvc.perform(authGet("/api/v1/player/missions/" + missionId
@@ -80,20 +78,119 @@ class MissionOwnershipIntegrationTest extends IntegrationTestSupport {
                 .andExpect(jsonPath("$.data[?(@.code=='RECON_PERIMETER')].status")
                         .value("NOT_STARTED"));
     }
+
+    @Test
+    @DisplayName("an attacker cannot submit another player's puzzle")
+    void cannotSubmitAnotherPlayersPuzzle() throws Exception {
+        String victimToken = signInNewPlayer("pzvictim", "pzvictim@example.com");
+        String attackerToken = signInNewPlayer("pzattacker", "pzattacker@example.com");
+        UUID missionId = missionId("RECON_PERIMETER");
+
+        // The victim starts the mission, so a real puzzle exists.
+        mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/start", victimToken))
+                .andExpect(status().isOk());
+        var victimPuzzle = latestPuzzle("pzvictim@example.com", missionId);
+
+        // The attacker never started this mission, and is refused twice over:
+        // the puzzle is not theirs, and the mission is not in progress for them.
+        mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/puzzle/submit", attackerToken)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new PuzzlePayload(victimPuzzle.getPuzzleId(),
+                                        correctAnswerFor(victimPuzzle)))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Puzzle not found for this mission"));
+
+        // The victim's puzzle is untouched and still theirs to solve.
+        assertThat(latestPuzzle("pzvictim@example.com", missionId).getStatus())
+                .isEqualTo(com.cyberheist.puzzle.PuzzleAttemptStatus.ACTIVE);
+        assertThat(profileOf("pzvictim@example.com").getExperience()).isZero();
+        assertThat(profileOf("pzattacker@example.com").getExperience()).isZero();
+    }
     @Test
     @DisplayName("an attacker cannot complete a mission on the victim's behalf")
     void cannotCompleteOnBehalfOfAnotherPlayer() throws Exception {
         String victimToken = signInNewPlayer("bevictim", "bevictim@example.com");
         String attackerToken = signInNewPlayer("beattacker", "beattacker@example.com");
-        UUID missionId = missionId("RECON_PERIMETER");
-
-        // The victim starts it; the attacker has no progress row of their own.
+        UUID missionId = missionId("RECON_PERIMETER");// The victim starts it; the attacker has no progress row of their own.
         mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/start", victimToken))
                 .andExpect(status().isOk());
-
         mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/complete", attackerToken))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("This mission has not been started"));
+    }
+
+    @Test
+    @DisplayName("an attacker cannot advance another player's puzzle by id alone")
+    void attackerCannotCompleteOnBehalfOfAnotherPlayer() throws Exception {
+        String victimToken = signInNewPlayer("pz2victim", "pz2victim@example.com");
+        String attackerToken = signInNewPlayer("pz2attacker", "pz2attacker@example.com");
+        UUID missionId = missionId("RECON_PERIMETER");
+
+        mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/start", victimToken))
+                .andExpect(status().isOk());
+        var victimPuzzle = latestPuzzle("pz2victim@example.com", missionId);
+
+        // Correct answer, right mission, wrong player: still refused.
+        mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/puzzle/submit", attackerToken)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new PuzzlePayload(victimPuzzle.getPuzzleId(),
+                                        correctAnswerFor(victimPuzzle)))))
+                .andExpect(status().isNotFound());
+
+        assertThat(profileOf("pz2victim@example.com").getExperience()).isZero();
+        assertThat(profileOf("pz2attacker@example.com").getExperience()).isZero();
+    }
+
+    @Test
+    @DisplayName("a puzzle from another mission is rejected")
+    void cannotSubmitAPuzzleFromAnotherMission() throws Exception {
+        String token = signInNewPlayer("crossmission", "crossmission@example.com");
+        UUID first = missionId("RECON_PERIMETER");
+        UUID second = missionId("RECON_NETWORK_MAP");
+
+        // The player starts both missions and holds a live puzzle on each.
+        mockMvc.perform(authPost("/api/v1/player/missions/" + first + "/start", token))
+                .andExpect(status().isOk());
+        mockMvc.perform(authPost("/api/v1/player/missions/" + second + "/start", token))
+                .andExpect(status().isOk());
+
+        var firstPuzzle = latestPuzzle("crossmission@example.com", first);
+        var secondPuzzle = latestPuzzle("crossmission@example.com", second);
+        assertThat(firstPuzzle.getPuzzleId()).isNotEqualTo(secondPuzzle.getPuzzleId());
+
+        // Answering mission A's puzzle while claiming to be on mission B must not
+        // solve A either: the mismatch is refused before the answer is read.
+        mockMvc.perform(authPost("/api/v1/player/missions/" + second + "/puzzle/submit", token)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new PuzzlePayload(firstPuzzle.getPuzzleId(), correctAnswerFor(firstPuzzle)))))
+                .andExpect(status().isNotFound());
+
+        assertThat(latestPuzzle("crossmission@example.com", first).getStatus())
+                .isEqualTo(com.cyberheist.puzzle.PuzzleAttemptStatus.ACTIVE);
+        assertThat(profileOf("crossmission@example.com").getExperience()).isZero();
+    }
+
+    @Test
+    @DisplayName("a made-up puzzle id is rejected")
+    void cannotSubmitAFakePuzzleId() throws Exception {
+        String token = signInNewPlayer("fakepz", "fakepz@example.com");
+        UUID missionId = missionId("RECON_PERIMETER");
+
+        mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/start", token))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/puzzle/submit", token)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new PuzzlePayload(randomUuid(), "ANYTHING"))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Puzzle not found for this mission"));
+
+        assertThat(profileOf("fakepz@example.com").getExperience()).isZero();
+        assertThat(profileOf("fakepz@example.com").getCoins()).isEqualTo(100);
     }
 
     @Test
@@ -118,8 +215,7 @@ class MissionOwnershipIntegrationTest extends IntegrationTestSupport {
 
         mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/start", victimToken))
                 .andExpect(status().isOk());
-        mockMvc.perform(authPost("/api/v1/player/missions/" + missionId + "/complete", victimToken))
-                .andExpect(status().isOk());
+        completeMissionThroughPuzzle(victimToken, missionId, "rewardvictim@example.com");
 
         // The victim gained the reward; the attacker gained nothing.
         assertThat(profileOf("rewardvictim@example.com").getCoins())

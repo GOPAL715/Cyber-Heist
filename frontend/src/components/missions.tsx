@@ -4,6 +4,7 @@ import {
   MISSION_DIFFICULTIES,
   STATUS_LABELS,
 } from './missionConstants'
+import { PUZZLE_TYPE_LABELS } from './puzzleConstants'
 
 interface MissionFiltersProps {
   selectedCategory: MissionCategory | 'ALL'
@@ -75,7 +76,6 @@ interface MissionCardProps {
   mission: Mission
   isBusy: boolean
   onStart: (mission: Mission) => void
-  onComplete: (mission: Mission) => void
 }
 
 /**
@@ -83,8 +83,13 @@ interface MissionCardProps {
  *
  * <p>Which action is offered, and whether anything is offered at all, comes from
  * the {@code status}, {@code locked} and {@code startable} flags the server sent.
+ *
+ * <p>There is exactly one action. Phase 2 also offered "Complete mission" on an
+ * in-progress mission, which skipped the challenge entirely; Phase 3 replaced
+ * it with the puzzle, and the start button stays available so a player who wants
+ * a different puzzle can simply take a new one at the energy cost.
  */
-export function MissionCard({ mission, isBusy, onStart, onComplete }: MissionCardProps) {
+export function MissionCard({ mission, isBusy, onStart }: MissionCardProps) {
   const isLocked = mission.locked
   const isCompleted = mission.status === 'COMPLETED'
   const isInProgress = mission.status === 'IN_PROGRESS'
@@ -144,24 +149,21 @@ export function MissionCard({ mission, isBusy, onStart, onComplete }: MissionCar
         <p className="text-xs font-medium text-amber">{mission.lockReason}</p>
       ) : isCompleted ? (
         <p className="text-xs font-semibold text-lime">✓ {STATUS_LABELS.COMPLETED}</p>
-      ) : isInProgress ? (
-        <button
-          type="button"
-          disabled={isBusy}
-          onClick={() => onComplete(mission)}
-          className="btn-primary w-full"
-        >
-          {isBusy ? 'Working…' : 'Complete mission'}
-        </button>
       ) : (
-        <button
-          type="button"
-          disabled={isBusy || !mission.startable}
-          onClick={() => onStart(mission)}
-          className="btn-primary w-full"
-        >
-          {isBusy ? 'Starting…' : 'Start mission'}
-        </button>
+        <>
+          <p className="text-[0.65rem] uppercase tracking-widest text-slate-500">
+            Puzzle · {PUZZLE_TYPE_LABELS[mission.puzzleType]}
+            {isInProgress ? ' · new puzzle costs energy' : ''}
+          </p>
+          <button
+            type="button"
+            disabled={isBusy || !mission.startable}
+            onClick={() => onStart(mission)}
+            className="btn-primary w-full"
+          >
+            {isBusy ? 'Starting…' : isInProgress ? 'Restart for a new puzzle' : 'Start mission'}
+          </button>
+        </>
       )}
     </article>
   )

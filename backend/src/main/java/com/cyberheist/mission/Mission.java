@@ -1,6 +1,7 @@
 package com.cyberheist.mission;
 
 import com.cyberheist.common.AuditableEntity;
+import com.cyberheist.puzzle.PuzzleType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -42,6 +43,18 @@ public class Mission extends AuditableEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "difficulty", nullable = false, length = 16)
     private MissionDifficulty difficulty;
+
+    /**
+     * Which puzzle family this mission generates.
+     *
+     * <p>Server-owned data, exactly like the rewards: no client chooses it, and
+     * the puzzle engine resolves it through its provider registry. Keeping it
+     * on the mission rather than in a switch is what lets a mission be
+     * re-pointed at a new puzzle type without a code change.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "puzzle_type", nullable = false, length = 16)
+    private PuzzleType puzzleType;
 
     @Column(name = "required_level", nullable = false)
     private int requiredLevel;
@@ -87,6 +100,10 @@ public class Mission extends AuditableEntity {
 
     public MissionDifficulty getDifficulty() {
         return difficulty;
+    }
+
+    public PuzzleType getPuzzleType() {
+        return puzzleType;
     }
 
     public int getRequiredLevel() {

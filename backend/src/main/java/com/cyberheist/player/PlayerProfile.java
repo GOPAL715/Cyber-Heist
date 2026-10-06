@@ -7,6 +7,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -41,6 +42,15 @@ public class PlayerProfile extends AuditableEntity {
     @Column(name = "energy", nullable = false)
     private int energy;
 
+    /**
+     * Server timestamp of the last energy accounting.
+     *
+     * <p>Regeneration is computed lazily from this value; it is written only by
+     * the backend, never from client input.
+     */
+    @Column(name = "last_energy_update", nullable = false)
+    private Instant lastEnergyUpdate;
+
     protected PlayerProfile() {
         // for JPA
     }
@@ -53,6 +63,7 @@ public class PlayerProfile extends AuditableEntity {
         this.experience = experience;
         this.coins = coins;
         this.energy = energy;
+        this.lastEnergyUpdate = Instant.now();
     }
 
     public UUID getId() {
@@ -81,6 +92,21 @@ public class PlayerProfile extends AuditableEntity {
 
     public int getEnergy() {
         return energy;
+    }
+
+    public Instant getLastEnergyUpdate() {
+        return lastEnergyUpdate;
+    }
+
+    /**
+     * Re-anchors the energy clock.
+     *
+     * <p>Only {@code EnergyService} calls this, and only to repair a missing or
+     * future-dated stamp. Ordinary advancement happens inside
+     * {@link #applyRegeneration} so the carried-forward fraction is preserved.
+     */
+    public void setLastEnergyUpdate(Instant lastEnergyUpdate) {
+        this.lastEnergyUpdate = lastEnergyUpdate;
     }
 
     // ---------------------------------------------------------------------
@@ -122,6 +148,9 @@ public class PlayerProfile extends AuditableEntity {
     /**
      * Spends energy, refusing to go negative.
      *
+     * <p>The caller is expected to have refreshed regeneration first (see
+     * {@code EnergyService}), so the balance observed here is current.
+     *
      * @return the energy left afterwards
      * @throws IllegalStateException when the player cannot afford the cost
      */
@@ -133,6 +162,36 @@ public class PlayerProfile extends AuditableEntity {
             throw new IllegalStateException("Insufficient energy");
         }
         this.energy -= amount;
+        return this.energy;
+    }
+
+    /**
+     * Applies lazily computed regeneration.
+     *
+     * <p>Called only by {@code EnergyService}, which owns the interval math and
+     * the server clock. The timestamp advances by exactly the whole intervals
+     * consumed, never to "now" outright, so fractional elapsed time is carried
+     * forward instead of being silently dropped.
+     *
+     * @param regenerated   whole units earned since the last accounting
+     * @param consumed      the elapsed time those units account for
+     * @param maximum       hard cap; energy is clamped to it
+     * @return the energy afterwards
+     */
+    public int applyRegeneration(int regenerated, java.time.Duration consumed, int maximum) {
+        if (regenerated < 0) {
+            throw new IllegalArgumentException("Regenerated energy must not be negative");
+        }
+        if (maximum < 0) {
+            throw new IllegalArgumentException("Maximum energy must not be negative");
+        }
+        if (this.lastEnergyUpdate != null && consumed != null
+                && !consumed.isNegative() && !consumed.isZero()) {
+            this.lastEnergyUpdate = this.lastEnergyUpdate.plus(consumed);
+        }
+        // Clamped on both sides: the cap is a hard rule, and so is never
+        // negative, even if a caller ever tried to credit a negative balance.
+        this.energy = Math.min(maximum, Math.max(0, this.energy + regenerated));
         return this.energy;
     }
 }

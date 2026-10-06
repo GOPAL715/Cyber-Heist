@@ -1,18 +1,31 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, FullPageLoader } from '@/components/ui'
 import { MissionCard, MissionFilters } from '@/components/missions'
-import { MissionCompleteOverlay } from '@/components/MissionCompleteOverlay'
+import { PuzzlePanel, PuzzleResultOverlay } from '@/components/puzzle'
+import { OUTCOME_HEADLINES } from '@/components/puzzleConstants'
 import { useAuth } from '@/context/AuthContext'
 import { ApiError } from '@/services/apiClient'
 import { missionService } from '@/services'
-import type { Mission, MissionCategory, MissionCompletion, MissionDifficulty } from '@/types'
+import type {
+  Mission,
+  MissionCategory,
+  MissionDifficulty,
+  MissionStart,
+  PuzzleSubmission,
+} from '@/types'
 
 /**
- * The mission board.
+ * The mission board and the puzzle loop that hangs off it.
  *
- * <p>Holds no game rules of its own: it asks the server to start or complete a
- * mission and renders whatever comes back. Filters are applied to the already
- * fetched list so switching tabs is instant and costs no request.
+ * <p>The flow is board → start → puzzle → submit → result. This component owns
+ * that sequencing and nothing else: it asks the server to start a mission,
+ * shows the challenge it returns, forwards the player's answer, and renders
+ * whatever verdict comes back.
+ *
+ * <p>It deliberately holds no rules. There is no client-side answer checking,
+ * no score, no reward arithmetic and no "did I win" flag - the only input it
+ * ever sends with a submission is the puzzle id and the answer itself. That is
+ * what makes a tampered client worthless: there is nothing to tamper with.
  */
 export function MissionBoard({ onPlayerUpdated }: { onPlayerUpdated: () => void }) {
   const { authorizedRequest, isInitialising } = useAuth()
@@ -21,7 +34,11 @@ export function MissionBoard({ onPlayerUpdated }: { onPlayerUpdated: () => void 
   const [isLoading, setIsLoading] = useState(true)
   const [busyMissionId, setBusyMissionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<MissionCompletion | null>(null)
+
+  /** The mission whose puzzle is open, with the start response that produced it. */
+  const [active, setActive] = useState<MissionStart | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [result, setResult] = useState<PuzzleSubmission | null>(null)
 
   const [category, setCategory] = useState<MissionCategory | 'ALL'>('ALL')
   const [difficulty, setDifficulty] = useState<MissionDifficulty | 'ALL'>('ALL')
@@ -45,12 +62,14 @@ export function MissionBoard({ onPlayerUpdated }: { onPlayerUpdated: () => void 
     void loadMissions()
   }, [isInitialising, loadMissions])
 
-  async function handleStart(mission: Mission) {
-    setBusyMissionId(mission.id)
+  async function startMission(missionId: string) {
+    setBusyMissionId(missionId)
     setError(null)
     try {
-      await authorizedRequest((token) => missionService.start(token, mission.id))
-      await loadMissions()
+      // One call does the charging and the generating, so the player can never
+      // be charged without receiving a challenge.
+      const start = await authorizedRequest((token) => missionService.start(token, missionId))
+      setActive(start)
       // Energy was spent, so the header must be refreshed too.
       onPlayerUpdated()
     } catch (startError) {
@@ -62,25 +81,47 @@ export function MissionBoard({ onPlayerUpdated }: { onPlayerUpdated: () => void 
     }
   }
 
-  async function handleComplete(mission: Mission) {
-    setBusyMissionId(mission.id)
+  const handleStart = useCallback(
+    (mission: Mission) => startMission(mission.id),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [authorizedRequest],
+  )
+
+  async function handleSubmit(answer: string) {
+    if (!active) return
+    setIsSubmitting(true)
     setError(null)
     try {
-      const completion = await authorizedRequest((token) =>
-        missionService.complete(token, mission.id),
+      const submission = await authorizedRequest((token) =>
+        missionService.submitPuzzle(token, active.id, active.puzzle.puzzleId, answer),
       )
-      setResult(completion)
+      setResult(submission)
+      setActive(null)
       await loadMissions()
       onPlayerUpdated()
-    } catch (completeError) {
+    } catch (submitError) {
       setError(
-        completeError instanceof ApiError
-          ? completeError.message
-          : 'Unable to complete this mission.',
+        submitError instanceof ApiError
+          ? submitError.message
+          : 'Unable to submit your answer.',
       )
     } finally {
-      setBusyMissionId(null)
+      setIsSubmitting(false)
     }
+  }
+
+  /**
+ * Restarts the failed mission, which costs energy and issues a new puzzle.
+ *
+ * <p>Goes by the mission id from the result rather than looking the mission up
+ * in the board: the list is reloaded after every submission, and a mission that
+ * has just been started may have moved under a different filter, so the card is
+ * not reliably still on screen.
+ */
+  async function handleRetry() {
+    if (!result) return
+    setResult(null)
+    await startMission(result.mission.id)
   }
 
   const visibleMissions = useMemo(
@@ -94,6 +135,26 @@ export function MissionBoard({ onPlayerUpdated }: { onPlayerUpdated: () => void 
   )
 
   if (isLoading) return <FullPageLoader />
+
+  // The puzzle screen replaces the board rather than sitting beside it: it is a
+  // focused task, and the cards behind it would invite a second click while a
+  // challenge is already open.
+  if (active) {
+    return (
+      <section className="space-y-4" aria-label="Mission board">
+        <h3 className="text-xs uppercase tracking-[0.3em] text-slate-500">Mission board</h3>
+        {error && <Alert>{error}</Alert>}
+        <PuzzlePanel
+          puzzle={active.puzzle}
+          missionTitle={active.title}
+          missionCategory={active.category}
+          isSubmitting={isSubmitting}
+          onSubmit={handleSubmit}
+          onAbandon={() => setActive(null)}
+        />
+      </section>
+    )
+  }
 
   return (
     <section className="space-y-4" aria-label="Mission board">
@@ -121,14 +182,32 @@ export function MissionBoard({ onPlayerUpdated }: { onPlayerUpdated: () => void 
               mission={mission}
               isBusy={busyMissionId === mission.id}
               onStart={handleStart}
-              onComplete={handleComplete}
             />
           ))}
         </div>
       )}
 
       {result && (
-        <MissionCompleteOverlay result={result} onDismiss={() => setResult(null)} />
+        <PuzzleResultOverlay
+          outcome={result.outcome}
+          headline={
+            result.alreadySolved && result.outcome === 'SOLVED'
+              ? 'ALREADY CLAIMED'
+              : OUTCOME_HEADLINES[result.outcome]
+          }
+          missionTitle={result.mission.title}
+          message={result.message}
+          rewards={result.rewards}
+          leveledUp={result.progression.leveledUp && !result.alreadySolved}
+          levelBefore={result.progression.levelBefore}
+          levelAfter={result.progression.levelAfter}
+          canRetry={result.canRetry}
+          onPrimaryAction={() => {
+            const wantsRetry = result.canRetry && !result.alreadySolved
+            setResult(null)
+            if (wantsRetry) void handleRetry()
+          }}
+        />
       )}
     </section>
   )

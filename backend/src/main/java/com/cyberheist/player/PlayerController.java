@@ -1,6 +1,8 @@
 package com.cyberheist.player;
 
 import com.cyberheist.common.ApiResponse;
+import com.cyberheist.energy.EnergyService;
+import com.cyberheist.energy.EnergySnapshot;
 import com.cyberheist.exception.ResourceNotFoundException;
 import com.cyberheist.player.dto.PlayerProfileResponse;
 import com.cyberheist.progression.ProgressionResult;
@@ -29,18 +31,27 @@ public class PlayerController {
     private final UserRepository userRepository;
     private final CurrentUser currentUser;
     private final ProgressionService progressionService;
+    private final EnergyService energyService;
 
     public PlayerController(PlayerProfileRepository profileRepository,
                             UserRepository userRepository,
                             CurrentUser currentUser,
-                            ProgressionService progressionService) {
+                            ProgressionService progressionService,
+                            EnergyService energyService) {
         this.profileRepository = profileRepository;
         this.userRepository = userRepository;
         this.currentUser = currentUser;
         this.progressionService = progressionService;
+        this.energyService = energyService;
     }
 
-    /** Returns the caller's own profile. */
+    /**
+     * Returns the caller's own profile, with energy brought up to date first.
+     *
+     * <p>Refreshing here is what makes the displayed balance trustworthy: it is
+     * the same figure the start endpoint tests affordability against, rather than
+     * a stale one the client has been counting down towards on its own.
+     */
     @GetMapping("/profile")
     public ApiResponse<PlayerProfileResponse> myProfile() {
         UUID userId = currentUser.requireId();
@@ -56,6 +67,9 @@ public class PlayerController {
         // duplicate the curve just to draw a progress bar.
         ProgressionResult progression = progressionService.describe(profile);
 
+        EnergySnapshot energy = energyService.currentFor(userId)
+                .orElseThrow(() -> ResourceNotFoundException.of("Player profile", userId));
+
         return ApiResponse.of(new PlayerProfileResponse(
                 profile.getId(),
                 username,
@@ -65,7 +79,12 @@ public class PlayerController {
                 progression.xpIntoLevel(),
                 progression.xpForNextLevel(),
                 profile.getCoins(),
-                profile.getEnergy()
+                energy.energy(),
+                energy.maximum(),
+                energy.regenerationEnabled(),
+                energy.regenerationAmount(),
+                energy.regenerationIntervalSeconds(),
+                energy.nextRegenerationAt()
         ));
     }
 }

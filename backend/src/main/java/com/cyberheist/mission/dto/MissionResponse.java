@@ -4,6 +4,7 @@ import com.cyberheist.mission.Mission;
 import com.cyberheist.mission.MissionCategory;
 import com.cyberheist.mission.MissionDifficulty;
 import com.cyberheist.mission.MissionStatus;
+import com.cyberheist.puzzle.PuzzleType;
 
 import java.util.UUID;
 
@@ -15,6 +16,8 @@ import java.util.UUID;
  * @param lockReason   player-safe explanation, {@code null} when not locked
  * @param startable    true when the player may start it right now
  * @param blockedReason why it cannot be started, {@code null} when it can
+ * @param puzzleType   the puzzle family this mission generates, so the board can
+ *                     label a mission without a second request
  */
 public record MissionResponse(
         UUID id,
@@ -23,6 +26,7 @@ public record MissionResponse(
         String description,
         MissionCategory category,
         MissionDifficulty difficulty,
+        PuzzleType puzzleType,
         int requiredLevel,
         int xpReward,
         long coinReward,
@@ -61,6 +65,7 @@ public record MissionResponse(
                 mission.getDescription(),
                 mission.getCategory(),
                 mission.getDifficulty(),
+                mission.getPuzzleType(),
                 mission.getRequiredLevel(),
                 mission.getXpReward(),
                 mission.getCoinReward(),

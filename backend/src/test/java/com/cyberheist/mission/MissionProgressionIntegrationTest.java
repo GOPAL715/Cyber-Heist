@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -21,19 +22,25 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * This test plays the catalogue in level order and fails if any mission ever
  * becomes unreachable.
  *
- * <p>Energy is topped up by the test itself: regeneration is deliberately not a
- * Phase 2 feature (the spec enumerates only spending and the non-negative
- * check), so topping up keeps the level gate under test on its own.
+ * <p>Every mission is played through the full Phase 3 loop - start, solve,
+ * submit - so the guard also proves that a correct answer is reachable for all
+ * five puzzle families rather than only for the ones a player happens to see
+ * first.
+ *
+ * <p>Energy is topped up by the test itself. Regeneration exists now, but it
+ * works in real minutes and this test must stay about the level gate, so
+ * topping up keeps the two concerns apart.
  */
 class MissionProgressionIntegrationTest extends IntegrationTestSupport {
+
+    private static final String GRINDER_EMAIL = "progressgrinder@example.com";
 
     @Test
     @DisplayName("a player who plays in level order can reach and finish every mission")
     void everyMissionIsReachableByLevel() throws Exception {
         // Distinct username: tests share one in-memory database per JVM.
-        String token = signInNewPlayer("progressgrinder", "progressgrinder@example.com");
-        UUID grinderId = userRepository.findByEmailIgnoreCase("progressgrinder@example.com")
-                .orElseThrow().getId();
+        String token = signInNewPlayer("progressgrinder", GRINDER_EMAIL);
+        UUID grinderId = userIdOf(GRINDER_EMAIL);
 
         List<String> played = new ArrayList<>();
 
@@ -48,7 +55,7 @@ class MissionProgressionIntegrationTest extends IntegrationTestSupport {
             String code = startable.get(0);
             played.add(code);
             topUpEnergy(grinderId);
-            startAndComplete(token, code);
+            startAndSolve(token, code);
         }
 
         assertThat(findStartableCodes(token))
@@ -112,13 +119,18 @@ class MissionProgressionIntegrationTest extends IntegrationTestSupport {
         return codes;
     }
 
-    private void startAndComplete(String token, String code) throws Exception {
+    private void startAndSolve(String token, String code) throws Exception {
         UUID id = missionId(code);
 
         mockMvc.perform(authPost("/api/v1/player/missions/" + id + "/start", token))
                 .andExpect(status().isOk());
-        mockMvc.perform(authPost("/api/v1/player/missions/" + id + "/complete", token))
-                .andExpect(status().isOk());
+
+        var puzzle = latestPuzzle(GRINDER_EMAIL, id);
+        submitPuzzle(token, id, puzzle.getPuzzleId(), correctAnswerFor(puzzle))
+                .path("outcome");
+        mockMvc.perform(authGet("/api/v1/player/missions/" + id, token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("COMPLETED"));
     }
 
     /**

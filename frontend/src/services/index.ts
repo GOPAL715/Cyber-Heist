@@ -6,7 +6,10 @@ import type {
   Mission,
   MissionCategory,
   MissionCompletion,
+  MissionStart,
   PlayerProfile,
+  PuzzleChallenge,
+  PuzzleSubmission,
   RegisterPayload,
 } from '@/types'
 
@@ -61,11 +64,13 @@ export const playerService = {
 }
 
 /**
- * Mission endpoints.
+ * Mission and puzzle endpoints.
  *
- * <p>Start and complete send no body at all: the client asks for an action and
- * the server decides eligibility, energy cost and rewards. There is no method
- * that could pass a user id or a reward amount.
+ * <p>Start sends no body at all and now returns the mission plus its puzzle.
+ * Submission is the only call in the game loop that sends a body, and what it
+ * sends is exactly two fields: a puzzle id and the player's answer. There is no
+ * method that could pass a user id, a reward amount or a success flag - the
+ * server decides all three.
  */
 export const missionService = {
   list(token: string, category?: MissionCategory): Promise<Mission[]> {
@@ -77,13 +82,46 @@ export const missionService = {
     return request<Mission>(`/api/v1/player/missions/${missionId}`, { token })
   },
 
-  start(token: string, missionId: string): Promise<Mission> {
-    return request<Mission>(`/api/v1/player/missions/${missionId}/start`, {
+  /** Starts a mission, spends its energy and returns the generated puzzle. */
+  start(token: string, missionId: string): Promise<MissionStart> {
+    return request<MissionStart>(`/api/v1/player/missions/${missionId}/start`, {
       method: 'POST',
       token,
     })
   },
 
+  /**
+   * Re-reads the caller's live puzzle, so a page reload does not cost a
+   * restart. The server re-derives it from the stored seed and sends no answer.
+   */
+  puzzle(token: string, missionId: string): Promise<PuzzleChallenge> {
+    return request<PuzzleChallenge>(`/api/v1/player/missions/${missionId}/puzzle`, { token })
+  },
+
+  /**
+   * Submits an answer.
+   *
+   * <p>The whole attack surface of the game loop: a puzzle id to look up and a
+   * string to compare. Everything the response reports is computed server-side.
+   */
+  submitPuzzle(
+    token: string,
+    missionId: string,
+    puzzleId: string,
+    answer: string,
+  ): Promise<PuzzleSubmission> {
+    return request<PuzzleSubmission>(`/api/v1/player/missions/${missionId}/puzzle/submit`, {
+      method: 'POST',
+      token,
+      body: { puzzleId, answer },
+    })
+  },
+
+  /**
+   * Legacy completion call, kept for Phase 2 clients.
+   *
+   * <p>It can no longer pay anything: only a solved puzzle completes a mission.
+   */
   complete(token: string, missionId: string): Promise<MissionCompletion> {
     return request<MissionCompletion>(`/api/v1/player/missions/${missionId}/complete`, {
       method: 'POST',
